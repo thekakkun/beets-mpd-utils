@@ -102,107 +102,6 @@ def changes(dict_1: dict, dict_2: dict) -> bool:
     return dict_1 == dict_2
 
 
-# class Player:
-#     def __init__(
-#         self,
-#         play_time: int = 240,
-#         play_percent: int = 50,
-#         skip_time: int = 20,
-#         skip_percent: int = 0,
-#     ) -> None:
-#         # play and skip threshold settings
-#         self.play_time: int = play_time
-#         self.play_percent: int = play_percent
-#         self.skip_time: int = skip_time
-#         self.skip_percent: int = skip_percent
-
-#         # playback state
-#         self.elapsed: int = 0
-#         self.is_played: bool = False
-
-#         self.track: Optional[Track] = None
-#         self.playback_task: Optional[asyncio.Task] = None
-
-#     def set_track(self, track: Track, elapsed: Optional[float] = None):
-#         print(
-#             f"change track from {self.track['title'] if self.track else 'None'} to {track['title']}"
-#         )
-
-#         previous_played = self.is_played
-#         previous_skipped = False
-
-#         if self.track:
-#             skip_threshold = max(
-#                 self.skip_time,
-#                 (float(self.track["duration"]) * self.skip_percent) // 100,
-#             )
-#             previous_skipped = not previous_played and self.elapsed < skip_threshold
-
-#             if previous_played:
-#                 print("previous track was played")
-#             elif previous_skipped:
-#                 print("previous track was skipped")
-#             else:
-#                 print("previous track was neither played nor skipped")
-
-#         self.elapsed = floor(elapsed) if elapsed else 0
-#         self.is_played = False
-#         self.track = track
-#         if self.playback_task:
-#             print("cancelling player coroutine")
-#             self.playback_task.cancel()
-
-#         return (previous_played, previous_skipped)
-
-#     def play(self):
-#         async def coro(self):
-#             print("starting player coroutine")
-#             if self.track:
-#                 play_threshold = min(
-#                     self.play_time,
-#                     (float(self.track["duration"]) * self.play_percent) // 100,
-#                 )
-
-#                 while True:
-#                     if play_threshold < self.elapsed:
-#                         print("set track played")
-#                         self.is_played = True
-#                         return
-
-#                     await asyncio.sleep(1)
-#                     self.elapsed += 1
-#                     print(f"elapsed: {self.elapsed}")
-
-#         print("play track")
-
-#         self.playback_task = asyncio.create_task(coro(self))
-
-#     def pause(self):
-#         print("pause track")
-#         if self.playback_task and not self.playback_task.done():
-#             print("cancelling player coroutine")
-#             self.playback_task.cancel()
-
-#     def stop(self):
-#         print("stop player")
-#         if self.playback_task and not self.playback_task.done():
-#             print("cancelling player coroutine")
-#             self.playback_task.cancel()
-
-#         self.track = None
-#         self.playback_task = None
-
-#     def seek(self, time: float):
-#         print("seeking track")
-#         self.elapsed = min(self.elapsed, int(time))
-
-#     def replay(self):
-#         print("replay track")
-#         if self.track:
-#             self.set_track(self.track)
-#             self.play()
-
-
 class PlaybackTracker:
     def __init__(
         self,
@@ -213,8 +112,6 @@ class PlaybackTracker:
         skip_time: int = 20,
         skip_percent: float = 0,
     ) -> None:
-        print("new song")
-
         # play and skip threshold settings
         try:
             self.play_threshold = min(
@@ -230,59 +127,64 @@ class PlaybackTracker:
             self.skip_threshold = skip_time
 
         # tracker stuff
-        self.tracker = asyncio.create_task(self.track())
+        self.task = asyncio.create_task(self.tracker())
         self.play_event = asyncio.Event()
         self.pause_event = asyncio.Event()
-        self.start_time = None
+        self.start_time = time.time()
         self.elapsed: float = elapsed or 0
 
         # playback status
         self.is_played: bool = False
 
-    def status(self) -> PlaybackStatus:
+        print(f"{self.task.get_name()}: initialize tracker from {elapsed or 0}")
+
+    async def tracker(self):
+        while True:
+            await self.play_event.wait()
+            print(f"{self.task.get_name()}: start tracker at {self.elapsed}")
+            self.start_time = time.time()
+
+            await self.pause_event.wait()
+            self.elapsed += time.time() - self.start_time
+            print(f"{self.task.get_name()}: pause tracker at {self.elapsed}")
+
+            self.is_played = self.is_played or self.play_threshold < self.elapsed
+
+            self.play_event.clear()
+            self.pause_event.clear()
+
+    def get_status(self) -> PlaybackStatus:
         if self.is_played:
             return "played"
-        elif self.elapsed < self.skip_threshold:
+        elif self.get_elapsed() < self.skip_threshold:
             return "skipped"
         else:
             return "neither"
 
-    async def start(self):
+    def get_elapsed(self) -> float:
+        return self.elapsed + (time.time() - self.start_time)
+
+    def start(self):
         if self.play_event.is_set():
             return
 
         self.play_event.set()
 
-    async def pause(self):
+    def pause(self):
         if not self.play_event.is_set():
             return
 
         self.pause_event.set()
 
     def rewind(self, position: float):
-        print("rewind")
+        print(f"{self.task.get_name()}: rewind tracker to {position}")
         self.elapsed = position
 
-    def replay(self):
-        print("replay")
-        self.start_time = None
+    def reset(self):
+        print(f"{self.task.get_name()}: replay")
+        self.start_time = time.time()
         self.elapsed = 0
         self.is_played = False
-
-    async def track(self):
-        while True:
-            await self.play_event.wait()
-            print(f"playing from {self.elapsed}")
-            self.start_time = time.time()
-
-            await self.pause_event.wait()
-            self.elapsed += time.time() - self.start_time
-            print(f"paused at {self.elapsed}")
-
-            self.is_played = self.is_played or self.play_threshold < self.elapsed
-
-            self.play_event.clear()
-            self.pause_event.clear()
 
 
 class MPDWrapper:
@@ -291,7 +193,7 @@ class MPDWrapper:
         self.client.disconnect()
 
         self.status: Status = {}
-        self.track: Track = {}
+        self.track: Optional[Track] = None
 
         self.playback_tracker: PlaybackTracker
 
@@ -300,18 +202,30 @@ class MPDWrapper:
             await self.client.connect("localhost", 6600)
             print("connected to MPD version,", self.client.mpd_version)
 
-            self.track = await self.client.currentsong()
+            track = await self.client.currentsong()
             self.status = await self.client.status()
-
-            if self.track:
+            if track:
+                self.track = track
                 self.playback_tracker = PlaybackTracker(
                     self.track, float(self.status.get("elapsed", 0))
                 )
+            else:
+                self.track = None
+
             if self.status.get("state") == "play":
-                await self.playback_tracker.start()
+                self.playback_tracker.start()
 
         except Exception as e:
             print(f"Connection failed: {e}")
+
+    def set_track(self, track: Optional[Track]):
+        prev_track_status = self.playback_tracker.get_status()
+        print(f"previous track: {prev_track_status}")
+
+        if track:
+            self.playback_tracker = PlaybackTracker(track)
+
+        self.track = track
 
     async def handle_subsystem(self, subsystem):
         print(f"\n== change in subsytem: {subsystem} ==")
@@ -327,64 +241,29 @@ class MPDWrapper:
         track = await self.client.currentsong()
         status = await self.client.status()
 
-        print(f"elapsed {status.get('elapsed','XXX') }")
-
         if self.track != track:
-            prev_track_status = self.playback_tracker.status
-            self.playback_tracker = PlaybackTracker(track)
-            self.track = track
-        elif self.status == status:
+            self.set_track(track)
+        elif self.status.get("state") == status.get("state"):
             try:
                 elapsed = float(status["elapsed"])
 
-                if elapsed < 1:
-                    self.playback_tracker.replay()
-                elif elapsed < self.playback_tracker.elapsed:
+                if elapsed < 1 or self.status["songid"] == self.status["nextsongid"]:
+                    print("reset tracker")
+                    self.playback_tracker.reset()
+                elif elapsed < self.playback_tracker.get_elapsed():
+                    print("rewind tracker")
                     self.playback_tracker.rewind(elapsed)
 
-            except:
-                print("no elapsed data")
+            except KeyError as err:
+                print(f"key not found: {err}")
 
         match status.get("state"):
             case "play":
-                await self.playback_tracker.start()
+                self.playback_tracker.start()
             case "pause":
-                await self.playback_tracker.pause()
+                self.playback_tracker.pause()
             case "stop":
-                self.playback_tracker.replay()
-
-    # async def handle_player(self):
-    #     prev_track = self.player.track
-    #     track = await self.client.currentsong()
-
-    #     prev_status = self.status
-    #     status = await self.client.status()
-
-    #     # track changed
-    #     if prev_track != track:
-    #         self.player.set_track(track)
-    #         self.player.play()
-    #         prev_status["state"] = "play"
-
-    #     # status changed
-    #     if prev_status["state"] != status["state"]:
-    #         match status["state"]:
-    #             case "play":
-    #                 self.player.play()
-    #             case "pause":
-    #                 self.player.pause()
-    #             case "stop":
-    #                 self.player.stop()
-
-    #     # track and status did not change, must be seek or replay
-    #     if prev_track == track and prev_status["state"] == status["state"]:
-    #         elapsed = float(status["elapsed"])
-
-    #         if elapsed < 1:
-    #             self.player.replay()
-    #             self.player.play()
-    #         elif 1 < abs(float(prev_status["elapsed"]) - elapsed):
-    #             self.player.seek(float(status["elapsed"]))
+                self.set_track(None)
 
 
 async def main():
