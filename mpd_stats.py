@@ -113,7 +113,7 @@ class PlaybackTracker:
         skip_percent: float = 0,
     ):
         self.client = client
-        self.track = {}
+        self.track: Optional[Track] = None
 
         self.play_time = play_time
         self.play_percent = play_percent
@@ -123,17 +123,30 @@ class PlaybackTracker:
         self.task: Optional[asyncio.Task] = None
         self.play_history: list[tuple[float, float]] = []
 
-    async def set_new_track(self) -> PlaybackStatus:
+    async def set_new_track(self) -> Optional[PlaybackStatus]:
         # collect data from previous track
-        if self.task:
-            self.task.cancel()
-        playback_status = self.get_playback_status()
-        print(playback_status)
+        if self.track:
+            if self.task:
+                self.task.cancel()
+            playback_status = self.get_playback_status()
+            print(playback_status)
+        else:
+            playback_status = None
 
         # set data for new track
         self.track = await self.client.currentsong()
         status = await self.client.status()
-        self.task = asyncio.create_task(self.tracker(float(status.get("elapsed", 0))))
+        elapsed = float((await self.client.status()).get("elapsed", 0))
+        if elapsed:
+            # new track is already being played
+            self.play_history = [(0, elapsed)]
+
+        if status.get("state") == "play":
+            # start playback tracker from elapsed time
+            self.task = asyncio.create_task(self.tracker(elapsed))
+        else:
+            # start tracker, awaiting play
+            self.task = asyncio.create_task(self.tracker())
 
         return playback_status
 
