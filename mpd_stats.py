@@ -79,6 +79,7 @@ Subsystems = Literal[
     "mount",
 ]
 
+EndReason = Literal["pause", "seek", "stop"]
 PlaybackStatus = Literal["played", "skipped", "neither"]
 
 
@@ -105,86 +106,153 @@ def changes(dict_1: dict, dict_2: dict) -> bool:
 class PlaybackTracker:
     def __init__(
         self,
-        track: Track,
-        elapsed: Optional[float] = None,
+        client: MPDClient,
         play_time: int = 240,
         play_percent: float = 0.5,
         skip_time: int = 20,
         skip_percent: float = 0,
-    ) -> None:
-        # play and skip threshold settings
+    ):
+        self.client = client
+        self.track = {}
+
+        self.play_time = play_time
+        self.play_percent = play_percent
+        self.skip_time = skip_time
+        self.skip_percent = skip_percent
+
+        self.task: Optional[asyncio.Task] = None
+        self.play_history: list[tuple[float, float]] = []
+
+    async def set_new_track(self) -> PlaybackStatus:
+        # collect data from previous track
+        if self.task:
+            self.task.cancel()
+        playback_status = self.get_playback_status()
+        print(playback_status)
+
+        # set data for new track
+        self.track = await self.client.currentsong()
+        status = await self.client.status()
+        self.task = asyncio.create_task(self.tracker(float(status.get("elapsed", 0))))
+
+        return playback_status
+
+    def get_play_time(self) -> float:
+        if not self.play_history:
+            return 0
+
+        self.play_history.sort(key=lambda x: x[0])
+
+        total_play_time = 0
+        current_start = self.play_history[0][0]
+        current_end = self.play_history[0][1]
+
+        for start, end in self.play_history[1:]:
+            if start <= current_end:
+                current_end = max(current_end, end)
+            else:
+                total_play_time += current_end - current_start
+                current_start = start
+                current_end = end
+
+        total_play_time += current_end - current_start
+
+        return total_play_time
+
+    def get_playback_status(self) -> PlaybackStatus:
         try:
-            self.play_threshold = min(
-                play_time,
-                float(track["duration"]) * play_percent,
+            play_threshold = min(
+                self.play_time,
+                float(self.track["duration"]) * self.play_percent,
             )
-            self.skip_threshold = max(
-                skip_time,
-                float(track["duration"]) * skip_percent,
+            skip_threshold = max(
+                self.skip_time,
+                float(self.track["duration"]) * self.skip_percent,
             )
         except KeyError:
-            self.play_threshold = play_time
-            self.skip_threshold = skip_time
+            play_threshold = self.play_time
+            skip_threshold = self.skip_time
 
-        # tracker stuff
-        self.task = asyncio.create_task(self.tracker())
-        self.play_event = asyncio.Event()
-        self.pause_event = asyncio.Event()
-        self.start_time = time.time()
-        self.elapsed: float = elapsed or 0
+        play_time = self.get_play_time()
 
-        # playback status
-        self.is_played: bool = False
-
-        print(f"{self.task.get_name()}: initialize tracker from {elapsed or 0}")
-
-    async def tracker(self):
-        while True:
-            await self.play_event.wait()
-            print(f"{self.task.get_name()}: start tracker at {self.elapsed}")
-            self.start_time = time.time()
-
-            await self.pause_event.wait()
-            self.elapsed += time.time() - self.start_time
-            print(f"{self.task.get_name()}: pause tracker at {self.elapsed}")
-
-            self.is_played = self.is_played or self.play_threshold < self.elapsed
-
-            self.play_event.clear()
-            self.pause_event.clear()
-
-    def get_status(self) -> PlaybackStatus:
-        if self.is_played:
+        if play_threshold < play_time:
             return "played"
-        elif self.get_elapsed() < self.skip_threshold:
+        elif play_time < skip_threshold:
             return "skipped"
         else:
             return "neither"
 
-    def get_elapsed(self) -> float:
-        return self.elapsed + (time.time() - self.start_time)
+    async def tracker(self, playing_from: Optional[float] = None):
+        while True:
+            start_from: dict[str, float] = {
+                "elapsed": playing_from or await self.play_start(),
+                "time": time.time(),
+            }
+            playing_from = None
+            print(start_from)
 
-    def start(self):
-        if self.play_event.is_set():
-            return
+            try:
+                end_reason = await self.play_end()
+                end_time = start_from["elapsed"] + time.time() - start_from["time"]
 
-        self.play_event.set()
+                if end_reason == "pause":
+                    print("pause track")
+                    self.play_history.append((start_from["elapsed"], end_time))
 
-    def pause(self):
-        if not self.play_event.is_set():
-            return
+                elif end_reason == "seek":
+                    print("seek track")
+                    self.play_history.append((start_from["elapsed"], end_time))
+                    playing_from = float((await self.client.status())["elapsed"])
 
-        self.pause_event.set()
+                elif end_reason == "stop":
+                    print("stop track")
+                    self.play_history.append((start_from["elapsed"], end_time))
 
-    def rewind(self, position: float):
-        print(f"{self.task.get_name()}: rewind tracker to {position}")
-        self.elapsed = position
+                print(self.play_history[-1])
 
-    def reset(self):
-        print(f"{self.task.get_name()}: replay")
-        self.start_time = time.time()
-        self.elapsed = 0
-        self.is_played = False
+            except asyncio.CancelledError:
+                print("new track")
+                self.play_history.append(
+                    (
+                        start_from["elapsed"],
+                        start_from["elapsed"] + time.time() - start_from["time"],
+                    )
+                )
+
+    async def play_start(self) -> float:
+        async for _ in self.client.idle(["player"]):
+            try:
+                status = await self.client.status()
+
+                if status.get("state") == "play":
+                    print(f"play from {float(status['elapsed'])}")
+                    return float(status["elapsed"])
+
+            except KeyError:
+                print("elapsed not found in status")
+
+        return 0
+
+    async def play_end(self) -> Optional[EndReason]:
+        async for _ in self.client.idle(["player"]):
+            try:
+                status = await self.client.status()
+
+                if status.get("state") == "pause":
+                    return "pause"
+                elif status.get("state") == "play":
+                    track = await self.client.currentsong()
+                    if self.track == track:
+                        return "seek"
+                    else:
+                        await self.set_new_track()
+                        return
+
+                elif status.get("state") == "stop":
+                    return "stop"
+
+            except KeyError:
+                print("elapsed not found in status")
 
 
 class MPDWrapper:
@@ -192,88 +260,24 @@ class MPDWrapper:
         self.client = MPDClient()
         self.client.disconnect()
 
-        self.status: Status = {}
-        self.track: Optional[Track] = None
-
-        self.playback_tracker: PlaybackTracker
-
     async def connect(self):
         try:
             await self.client.connect("localhost", 6600)
             print("connected to MPD version,", self.client.mpd_version)
 
-            track = await self.client.currentsong()
-            self.status = await self.client.status()
-            if track:
-                self.track = track
-                self.playback_tracker = PlaybackTracker(
-                    self.track, float(self.status.get("elapsed", 0))
-                )
-            else:
-                self.track = None
-
-            if self.status.get("state") == "play":
-                self.playback_tracker.start()
+            self.tracker = PlaybackTracker(self.client)
+            await self.tracker.set_new_track()
 
         except Exception as e:
             print(f"Connection failed: {e}")
-
-    def set_track(self, track: Optional[Track]):
-        prev_track_status = self.playback_tracker.get_status()
-        print(f"previous track: {prev_track_status}")
-
-        if track:
-            self.playback_tracker = PlaybackTracker(track)
-
-        self.track = track
-
-    async def handle_subsystem(self, subsystem):
-        print(f"\n== change in subsytem: {subsystem} ==")
-        match subsystem:
-            case "player":
-                await self.handle_player()
-            case _:
-                pass
-
-        self.status = await self.client.status()
-
-    async def handle_player(self):
-        track = await self.client.currentsong()
-        status = await self.client.status()
-
-        if self.track != track:
-            self.set_track(track)
-        elif self.status.get("state") == status.get("state"):
-            try:
-                elapsed = float(status["elapsed"])
-
-                if elapsed < 1 or self.status["songid"] == self.status["nextsongid"]:
-                    print("reset tracker")
-                    self.playback_tracker.reset()
-                elif elapsed < self.playback_tracker.get_elapsed():
-                    print("rewind tracker")
-                    self.playback_tracker.rewind(elapsed)
-
-            except KeyError as err:
-                print(f"key not found: {err}")
-
-        match status.get("state"):
-            case "play":
-                self.playback_tracker.start()
-            case "pause":
-                self.playback_tracker.pause()
-            case "stop":
-                self.set_track(None)
 
 
 async def main():
     player = MPDWrapper()
     await player.connect()
 
-    async for subsystems in player.client.idle():
-        for subsystem in subsystems:
-            await player.handle_subsystem(subsystem)
-
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    with asyncio.Runner() as runner:
+        runner.run(main())
+        runner.get_loop().run_forever()
