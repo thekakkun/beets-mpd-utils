@@ -204,10 +204,19 @@ class PlaybackTracker:
                 else playing_from,
                 "time": time.time(),
             }
-            print(start_from)
+
+            try:
+                expected_end = (
+                    start_from["time"]
+                    + float(self.track["duration"])
+                    - start_from["elapsed"]
+                )
+            except KeyError:
+                raise Exception("track has no duration")
+
             playing_from = None
 
-            end_reason = await self.play_end()
+            end_reason = await self.play_end(expected_end)
             end_time = start_from["elapsed"] + time.time() - start_from["time"]
 
             if end_reason == "pause":
@@ -262,22 +271,22 @@ class PlaybackTracker:
 
         return 0
 
-    async def play_end(self) -> Optional[EndReason]:
+    async def play_end(self, expected_end: float) -> Optional[EndReason]:
         async for _ in self.client.idle(["player"]):
             status = await self.client.status()
 
             if status.get("state") == "pause":
                 return "pause"
+
             elif status.get("state") == "play":
                 track = await self.client.currentsong()
                 if self.track == track:
-                    try:
-                        if float(status["elapsed"]) < 1:
-                            return "replay"
-                        else:
-                            return "seek"
-                    except KeyError:
-                        raise Exception("elapsed not found in status")
+                    # we're close to when the song expected to end.
+                    # Event probably not due to user input (aka seek).
+                    if abs(time.time() - expected_end) < 1:
+                        return "replay"
+                    else:
+                        return "seek"
 
                 else:
                     return "new track"
