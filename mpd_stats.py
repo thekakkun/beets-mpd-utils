@@ -79,7 +79,7 @@ Subsystems = Literal[
     "mount",
 ]
 
-EndReason = Literal["pause", "seek", "stop", "new track"]
+EndReason = Literal["pause", "seek", "replay", "stop", "new track"]
 PlaybackStatus = Literal["played", "skipped", "neither"]
 
 
@@ -217,10 +217,22 @@ class PlaybackTracker:
             elif end_reason == "seek":
                 print("seek track")
                 self.play_history.append((start_from["elapsed"], end_time))
+
                 try:
                     playing_from = float((await self.client.status())["elapsed"])
                 except KeyError:
                     raise Exception("elapsed time not found")
+
+            elif end_reason == "replay":
+                print("replay track")
+                self.play_history.append(
+                    (
+                        start_from["elapsed"],
+                        start_from["elapsed"] + time.time() - start_from["time"],
+                    )
+                )
+                await self.set_new_track()
+                return
 
             elif end_reason == "stop":
                 print("stop track")
@@ -238,37 +250,40 @@ class PlaybackTracker:
 
     async def play_start(self) -> float:
         async for _ in self.client.idle(["player"]):
-            try:
-                status = await self.client.status()
+            status = await self.client.status()
 
-                if status.get("state") == "play":
+            if status.get("state") == "play":
+                try:
                     print(f"play from {float(status['elapsed'])}")
                     return float(status["elapsed"])
 
-            except KeyError:
-                raise Exception("elapsed not found in status")
+                except KeyError:
+                    raise Exception("elapsed not found in status")
 
         return 0
 
     async def play_end(self) -> Optional[EndReason]:
         async for _ in self.client.idle(["player"]):
-            try:
-                status = await self.client.status()
+            status = await self.client.status()
 
-                if status.get("state") == "pause":
-                    return "pause"
-                elif status.get("state") == "play":
-                    track = await self.client.currentsong()
-                    if self.track == track:
-                        return "seek"
-                    else:
-                        return "new track"
+            if status.get("state") == "pause":
+                return "pause"
+            elif status.get("state") == "play":
+                track = await self.client.currentsong()
+                if self.track == track:
+                    try:
+                        if float(status["elapsed"]) < 1:
+                            return "replay"
+                        else:
+                            return "seek"
+                    except KeyError:
+                        raise Exception("elapsed not found in status")
 
-                elif status.get("state") == "stop":
-                    return "stop"
+                else:
+                    return "new track"
 
-            except KeyError:
-                raise Exception("elapsed not found in status")
+            elif status.get("state") == "stop":
+                return "stop"
 
 
 class MPDWrapper:
