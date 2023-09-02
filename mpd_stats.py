@@ -119,27 +119,36 @@ class PlaybackTracker:
         self.skip_time = skip_time
         self.skip_percent = skip_percent
 
-        self.task: Optional[asyncio.Task] = None
+        self.track_song_task: Optional[asyncio.Task] = None
         self.play_history: list[tuple[float, float]] = []
 
     async def set_new_song(self):
-        print("foo")
         status = await self.client.status()
+
+        if status.get("state") == "stop":
+            async for _ in self.client.idle(["player"]):
+                status = await self.client.status()
+                if status.get("state") == "play":
+                    break
+
+        song = await self.client.currentsong()
+        print(f"\nNew song: {song['artist']} - {song['title']}")
         elapsed = float((await self.client.status()).get("elapsed", 0))
+
         if elapsed:
             # new song is already being played
             self.play_history = [(0, elapsed)]
 
         if status.get("state") == "play":
             # start playback tracker from elapsed time
-            self.task = asyncio.create_task(self.track_song(elapsed))
+            self.track_song_task = asyncio.create_task(self.track_song(song, elapsed))
         else:
             # start tracker, awaiting play
-            self.task = asyncio.create_task(self.track_song())
+            self.track_song_task = asyncio.create_task(self.track_song(song))
 
-    async def track_song(self, playing_from: Optional[float] = None) -> PlaybackStatus:
-        song = await self.client.currentsong()
-
+    async def track_song(
+        self, song: Track, playing_from: Optional[float] = None
+    ) -> PlaybackStatus:
         while True:
             start_from: dict[str, float] = {
                 "elapsed": await self.play_start()
@@ -181,14 +190,11 @@ class PlaybackTracker:
                         start_from["elapsed"] + time.time() - start_from["time"],
                     )
                 )
-
-                await self.set_new_song()
                 break
 
             elif end_reason == "stop":
                 print("stop song")
                 self.play_history.append((start_from["elapsed"], end_time))
-                # Once stop is called, there is no one listening for song changes anymore
                 break
 
             elif end_reason == "new song":
@@ -198,12 +204,13 @@ class PlaybackTracker:
                         start_from["elapsed"] + time.time() - start_from["time"],
                     )
                 )
-
-                await self.set_new_song()
                 break
 
         playback_status = self.get_playback_status(song)
         print(playback_status)
+
+        await self.set_new_song()
+
         return playback_status
 
     def get_play_time(self) -> float:
