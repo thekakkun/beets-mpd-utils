@@ -79,7 +79,7 @@ Subsystems = Literal[
     "mount",
 ]
 
-EndReason = Literal["pause", "seek", "replay", "stop", "new track"]
+EndReason = Literal["pause", "seek", "replay", "stop", "new song"]
 PlaybackStatus = Literal["played", "skipped", "neither"]
 
 
@@ -113,7 +113,6 @@ class PlaybackTracker:
         skip_percent: float = 0,
     ):
         self.client = client
-        self.track: Optional[Track] = None
 
         self.play_time = play_time
         self.play_percent = play_percent
@@ -123,29 +122,88 @@ class PlaybackTracker:
         self.task: Optional[asyncio.Task] = None
         self.play_history: list[tuple[float, float]] = []
 
-    async def set_new_track(self) -> Optional[PlaybackStatus]:
-        # collect data from previous track
-        if self.track:
-            playback_status = self.get_playback_status()
-            print(playback_status)
-        else:
-            playback_status = None
-
-        # set data for new track
-        self.track = await self.client.currentsong()
+    async def set_new_song(self):
+        print("foo")
         status = await self.client.status()
         elapsed = float((await self.client.status()).get("elapsed", 0))
         if elapsed:
-            # new track is already being played
+            # new song is already being played
             self.play_history = [(0, elapsed)]
 
         if status.get("state") == "play":
             # start playback tracker from elapsed time
-            self.task = asyncio.create_task(self.tracker(elapsed))
+            self.task = asyncio.create_task(self.track_song(elapsed))
         else:
             # start tracker, awaiting play
-            self.task = asyncio.create_task(self.tracker())
+            self.task = asyncio.create_task(self.track_song())
 
+    async def track_song(self, playing_from: Optional[float] = None) -> PlaybackStatus:
+        song = await self.client.currentsong()
+
+        while True:
+            start_from: dict[str, float] = {
+                "elapsed": await self.play_start()
+                if playing_from == None
+                else playing_from,
+                "time": time.time(),
+            }
+
+            try:
+                expected_end = (
+                    start_from["time"] + float(song["duration"]) - start_from["elapsed"]
+                )
+            except KeyError:
+                raise Exception("song has no duration")
+
+            playing_from = None
+
+            end_reason = await self.play_end(song, expected_end)
+            end_time = start_from["elapsed"] + time.time() - start_from["time"]
+
+            if end_reason == "pause":
+                print("pause song")
+                self.play_history.append((start_from["elapsed"], end_time))
+
+            elif end_reason == "seek":
+                print("seek song")
+                self.play_history.append((start_from["elapsed"], end_time))
+
+                try:
+                    playing_from = float((await self.client.status())["elapsed"])
+                except KeyError:
+                    raise Exception("elapsed time not found")
+
+            elif end_reason == "replay":
+                print("replay song")
+                self.play_history.append(
+                    (
+                        start_from["elapsed"],
+                        start_from["elapsed"] + time.time() - start_from["time"],
+                    )
+                )
+
+                await self.set_new_song()
+                break
+
+            elif end_reason == "stop":
+                print("stop song")
+                self.play_history.append((start_from["elapsed"], end_time))
+                # Once stop is called, there is no one listening for song changes anymore
+                break
+
+            elif end_reason == "new song":
+                self.play_history.append(
+                    (
+                        start_from["elapsed"],
+                        start_from["elapsed"] + time.time() - start_from["time"],
+                    )
+                )
+
+                await self.set_new_song()
+                break
+
+        playback_status = self.get_playback_status(song)
+        print(playback_status)
         return playback_status
 
     def get_play_time(self) -> float:
@@ -170,18 +228,15 @@ class PlaybackTracker:
 
         return total_play_time
 
-    def get_playback_status(self) -> PlaybackStatus:
-        if not self.track:
-            raise Exception("no current playing track")
-
+    def get_playback_status(self, song: Track) -> PlaybackStatus:
         try:
             play_threshold = min(
                 self.play_time,
-                float(self.track["duration"]) * self.play_percent,
+                float(song["duration"]) * self.play_percent,
             )
             skip_threshold = max(
                 self.skip_time,
-                float(self.track["duration"]) * self.skip_percent,
+                float(song["duration"]) * self.skip_percent,
             )
         except KeyError:
             play_threshold = self.play_time
@@ -195,67 +250,6 @@ class PlaybackTracker:
             return "skipped"
         else:
             return "neither"
-
-    async def tracker(self, playing_from: Optional[float] = None):
-        while True:
-            start_from: dict[str, float] = {
-                "elapsed": await self.play_start()
-                if playing_from == None
-                else playing_from,
-                "time": time.time(),
-            }
-
-            try:
-                expected_end = (
-                    start_from["time"]
-                    + float(self.track["duration"])
-                    - start_from["elapsed"]
-                )
-            except KeyError:
-                raise Exception("track has no duration")
-
-            playing_from = None
-
-            end_reason = await self.play_end(expected_end)
-            end_time = start_from["elapsed"] + time.time() - start_from["time"]
-
-            if end_reason == "pause":
-                print("pause track")
-                self.play_history.append((start_from["elapsed"], end_time))
-
-            elif end_reason == "seek":
-                print("seek track")
-                self.play_history.append((start_from["elapsed"], end_time))
-
-                try:
-                    playing_from = float((await self.client.status())["elapsed"])
-                except KeyError:
-                    raise Exception("elapsed time not found")
-
-            elif end_reason == "replay":
-                print("replay track")
-                self.play_history.append(
-                    (
-                        start_from["elapsed"],
-                        start_from["elapsed"] + time.time() - start_from["time"],
-                    )
-                )
-                await self.set_new_track()
-                return
-
-            elif end_reason == "stop":
-                print("stop track")
-                self.play_history.append((start_from["elapsed"], end_time))
-
-            elif end_reason == "new track":
-                self.play_history.append(
-                    (
-                        start_from["elapsed"],
-                        start_from["elapsed"] + time.time() - start_from["time"],
-                    )
-                )
-                await self.set_new_track()
-                return
 
     async def play_start(self) -> float:
         async for _ in self.client.idle(["player"]):
@@ -271,7 +265,7 @@ class PlaybackTracker:
 
         return 0
 
-    async def play_end(self, expected_end: float) -> Optional[EndReason]:
+    async def play_end(self, song: Track, expected_end: float) -> Optional[EndReason]:
         async for _ in self.client.idle(["player"]):
             status = await self.client.status()
 
@@ -279,8 +273,8 @@ class PlaybackTracker:
                 return "pause"
 
             elif status.get("state") == "play":
-                track = await self.client.currentsong()
-                if self.track == track:
+                current_song = await self.client.currentsong()
+                if song == current_song:
                     # we're close to when the song expected to end.
                     # Event probably not due to user input (aka seek).
                     if abs(time.time() - expected_end) < 1:
@@ -289,7 +283,7 @@ class PlaybackTracker:
                         return "seek"
 
                 else:
-                    return "new track"
+                    return "new song"
 
             elif status.get("state") == "stop":
                 return "stop"
@@ -306,7 +300,7 @@ class MPDWrapper:
             print("connected to MPD version,", self.client.mpd_version)
 
             self.tracker = PlaybackTracker(self.client)
-            await self.tracker.set_new_track()
+            await self.tracker.set_new_song()
 
         except Exception as e:
             raise Exception(f"Connection failed: {e}")
