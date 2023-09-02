@@ -171,6 +171,9 @@ class PlaybackTracker:
         return total_play_time
 
     def get_playback_status(self) -> PlaybackStatus:
+        if not self.track:
+            raise Exception("no current playing track")
+
         try:
             play_threshold = min(
                 self.play_time,
@@ -214,7 +217,10 @@ class PlaybackTracker:
             elif end_reason == "seek":
                 print("seek track")
                 self.play_history.append((start_from["elapsed"], end_time))
-                playing_from = float((await self.client.status())["elapsed"])
+                try:
+                    playing_from = float((await self.client.status())["elapsed"])
+                except KeyError:
+                    raise Exception("elapsed time not found")
 
             elif end_reason == "stop":
                 print("stop track")
@@ -230,17 +236,6 @@ class PlaybackTracker:
                 await self.set_new_track()
                 return
 
-            print(self.play_history[-1])
-
-            # except asyncio.CancelledError:  # Don't do this. breaks ctrl-c
-            #     print("new track")
-            #     self.play_history.append(
-            #         (
-            #             start_from["elapsed"],
-            #             start_from["elapsed"] + time.time() - start_from["time"],
-            #         )
-            #     )
-
     async def play_start(self) -> float:
         async for _ in self.client.idle(["player"]):
             try:
@@ -251,7 +246,7 @@ class PlaybackTracker:
                     return float(status["elapsed"])
 
             except KeyError:
-                print("elapsed not found in status")
+                raise Exception("elapsed not found in status")
 
         return 0
 
@@ -273,7 +268,7 @@ class PlaybackTracker:
                     return "stop"
 
             except KeyError:
-                print("elapsed not found in status")
+                raise Exception("elapsed not found in status")
 
 
 class MPDWrapper:
@@ -290,7 +285,7 @@ class MPDWrapper:
             await self.tracker.set_new_track()
 
         except Exception as e:
-            print(f"Connection failed: {e}")
+            raise Exception(f"Connection failed: {e}")
 
 
 async def main():
