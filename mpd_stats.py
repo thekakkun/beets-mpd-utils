@@ -79,7 +79,7 @@ Subsystems = Literal[
     "mount",
 ]
 
-EndReason = Literal["pause", "seek", "stop"]
+EndReason = Literal["pause", "seek", "stop", "new track"]
 PlaybackStatus = Literal["played", "skipped", "neither"]
 
 
@@ -126,8 +126,6 @@ class PlaybackTracker:
     async def set_new_track(self) -> Optional[PlaybackStatus]:
         # collect data from previous track
         if self.track:
-            if self.task:
-                self.task.cancel()
             playback_status = self.get_playback_status()
             print(playback_status)
         else:
@@ -198,39 +196,50 @@ class PlaybackTracker:
     async def tracker(self, playing_from: Optional[float] = None):
         while True:
             start_from: dict[str, float] = {
-                "elapsed": playing_from or await self.play_start(),
+                "elapsed": await self.play_start()
+                if playing_from == None
+                else playing_from,
                 "time": time.time(),
             }
-            playing_from = None
             print(start_from)
+            playing_from = None
 
-            try:
-                end_reason = await self.play_end()
-                end_time = start_from["elapsed"] + time.time() - start_from["time"]
+            end_reason = await self.play_end()
+            end_time = start_from["elapsed"] + time.time() - start_from["time"]
 
-                if end_reason == "pause":
-                    print("pause track")
-                    self.play_history.append((start_from["elapsed"], end_time))
+            if end_reason == "pause":
+                print("pause track")
+                self.play_history.append((start_from["elapsed"], end_time))
 
-                elif end_reason == "seek":
-                    print("seek track")
-                    self.play_history.append((start_from["elapsed"], end_time))
-                    playing_from = float((await self.client.status())["elapsed"])
+            elif end_reason == "seek":
+                print("seek track")
+                self.play_history.append((start_from["elapsed"], end_time))
+                playing_from = float((await self.client.status())["elapsed"])
 
-                elif end_reason == "stop":
-                    print("stop track")
-                    self.play_history.append((start_from["elapsed"], end_time))
+            elif end_reason == "stop":
+                print("stop track")
+                self.play_history.append((start_from["elapsed"], end_time))
 
-                print(self.play_history[-1])
-
-            except asyncio.CancelledError:
-                print("new track")
+            elif end_reason == "new track":
                 self.play_history.append(
                     (
                         start_from["elapsed"],
                         start_from["elapsed"] + time.time() - start_from["time"],
                     )
                 )
+                await self.set_new_track()
+                return
+
+            print(self.play_history[-1])
+
+            # except asyncio.CancelledError:  # Don't do this. breaks ctrl-c
+            #     print("new track")
+            #     self.play_history.append(
+            #         (
+            #             start_from["elapsed"],
+            #             start_from["elapsed"] + time.time() - start_from["time"],
+            #         )
+            #     )
 
     async def play_start(self) -> float:
         async for _ in self.client.idle(["player"]):
@@ -258,8 +267,7 @@ class PlaybackTracker:
                     if self.track == track:
                         return "seek"
                     else:
-                        await self.set_new_track()
-                        return
+                        return "new track"
 
                 elif status.get("state") == "stop":
                     return "stop"
