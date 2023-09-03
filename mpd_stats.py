@@ -118,6 +118,11 @@ class PlaybackTracker:
         self.play_percent = play_percent
         self.skip_time = skip_time
         self.skip_percent = skip_percent
+        self.play_threshold: float
+        self.skip_threshold: float
+
+        self.song: Track
+        self.playback_history: list[tuple[float, float]]
 
         self.task = asyncio.create_task(self.track())
 
@@ -159,13 +164,16 @@ class PlaybackTracker:
         status = await self.client.status()
 
         elapsed = float(status.get("elapsed", 0))
-        history: list[tuple[float, float]] = [(0, elapsed)] if elapsed else []
+        self.playback_history = [(0, elapsed)] if elapsed else []
 
         while True:
             if status.get("state") == "play":
-                play_from = float(status["elapsed"])
-                play_at = time.time()
-                expected_end = play_at + float(status["duration"]) - play_from
+                try:
+                    play_from = float(status["elapsed"])
+                    play_at = time.time()
+                    expected_end = play_at + float(status["duration"]) - play_from
+                except KeyError:
+                    break
 
                 tasks = [
                     pause_task,
@@ -181,9 +189,13 @@ class PlaybackTracker:
                 for task in pending:
                     task.cancel()
 
-                history.append((play_from, play_from + time.time() - play_at))
-                if done in [replay_task, new_song_task, stop_task]:
+                self.playback_history.append(
+                    (play_from, play_from + time.time() - play_at)
+                )
+                if done in [replay_task, new_song_task]:
                     break
+                elif done == stop_task:
+                    self.playback_history = []
 
             elif status.get("state") == "pause":
                 tasks = [resume_task, new_song_task, stop_task] = self.tasks_for_pause()
@@ -192,15 +204,16 @@ class PlaybackTracker:
                 )
                 for task in pending:
                     task.cancel()
-                if done in [new_song_task, stop_task]:
+                if done == new_song_task:
+                    break
+                elif done == stop_task:
+                    self.playback_history = []
                     break
 
             elif status.get("state") == "stop":
                 break
 
             status = await self.client.status()
-
-        self.playback_history = history
 
     def tasks_for_play(self, expected_end: float) -> list[asyncio.Task]:
         pause_task = asyncio.create_task(self.pause())
@@ -272,7 +285,7 @@ class PlaybackTracker:
                 print("new song")
                 return
 
-    # FIX: Do we care about playback status here?
+    # A stopped song is neither played or skipped
     async def stop(self):
         async for _ in self.client.idle(["player"]):
             status = await self.client.status()
@@ -306,7 +319,9 @@ class PlaybackTracker:
     def get_playback_status(self) -> PlaybackStatus:
         play_time = self.get_play_time()
 
-        if self.play_threshold < play_time:
+        if play_time == 0:
+            return "neither"
+        elif self.play_threshold < play_time:
             return "played"
         elif play_time < self.skip_threshold:
             return "skipped"
