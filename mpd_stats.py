@@ -119,111 +119,179 @@ class PlaybackTracker:
         self.skip_time = skip_time
         self.skip_percent = skip_percent
 
-        self.track_song_task: Optional[asyncio.Task] = None
-        self.play_history: list[tuple[float, float]] = []
+        self.task = asyncio.create_task(self.track())
 
-    async def set_new_song(self):
+    async def track(self):
+        while True:
+            await self.set_song()
+            await self.track_playback()
+
+            print(self.playback_history)
+            print(self.get_playback_status())
+
+    async def set_song(self):
         status = await self.client.status()
 
-        if status.get("state") == "stop":
+        # if player is in "stop" state, wait until otherwise
+        while status.get("state") == "stop":
             async for _ in self.client.idle(["player"]):
                 status = await self.client.status()
-                if status.get("state") == "play":
+                break
+
+        self.song = await self.client.currentsong()
+        print(f"playing: {self.song['artist']} - {self.song['title']}")
+
+        # Set the play and skip threshold times
+        try:
+            self.play_threshold = min(
+                self.play_time,
+                float(self.song["duration"]) * self.play_percent,
+            )
+            self.skip_threshold = max(
+                self.skip_time,
+                float(self.song["duration"]) * self.skip_percent,
+            )
+        except KeyError:
+            self.play_threshold = self.play_time
+            self.skip_threshold = self.skip_time
+
+    async def track_playback(self):
+        status = await self.client.status()
+
+        elapsed = float(status.get("elapsed", 0))
+        history: list[tuple[float, float]] = [(0, elapsed)] if elapsed else []
+
+        while True:
+            if status.get("state") == "play":
+                play_from = float(status["elapsed"])
+                play_at = time.time()
+                expected_end = play_at + float(status["duration"]) - play_from
+
+                tasks = [
+                    pause_task,
+                    seek_task,
+                    replay_task,
+                    new_song_task,
+                    stop_task,
+                ] = self.tasks_for_play(expected_end)
+                [done], pending = await asyncio.wait(
+                    tasks,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+
+                history.append((play_from, play_from + time.time() - play_at))
+                if done in [replay_task, new_song_task, stop_task]:
                     break
 
-        song = await self.client.currentsong()
-        print(f"\nNew song: {song['artist']} - {song['title']}")
-        elapsed = float((await self.client.status()).get("elapsed", 0))
-
-        if elapsed:
-            # new song is already being played
-            self.play_history = [(0, elapsed)]
-
-        if status.get("state") == "play":
-            # start playback tracker from elapsed time
-            self.track_song_task = asyncio.create_task(self.track_song(song, elapsed))
-        else:
-            # start tracker, awaiting play
-            self.track_song_task = asyncio.create_task(self.track_song(song))
-
-    async def track_song(
-        self, song: Track, playing_from: Optional[float] = None
-    ) -> PlaybackStatus:
-        while True:
-            start_from: dict[str, float] = {
-                "elapsed": await self.play_start()
-                if playing_from == None
-                else playing_from,
-                "time": time.time(),
-            }
-
-            try:
-                expected_end = (
-                    start_from["time"] + float(song["duration"]) - start_from["elapsed"]
+            elif status.get("state") == "pause":
+                tasks = [resume_task, new_song_task, stop_task] = self.tasks_for_pause()
+                [done], pending = await asyncio.wait(
+                    tasks, return_when=asyncio.FIRST_COMPLETED
                 )
-            except KeyError:
-                raise Exception("song has no duration")
+                for task in pending:
+                    task.cancel()
+                if done in [new_song_task, stop_task]:
+                    break
 
-            playing_from = None
-
-            end_reason = await self.play_end(song, expected_end)
-            end_time = start_from["elapsed"] + time.time() - start_from["time"]
-
-            if end_reason == "pause":
-                print("pause song")
-                self.play_history.append((start_from["elapsed"], end_time))
-
-            elif end_reason == "seek":
-                print("seek song")
-                self.play_history.append((start_from["elapsed"], end_time))
-
-                try:
-                    playing_from = float((await self.client.status())["elapsed"])
-                except KeyError:
-                    raise Exception("elapsed time not found")
-
-            elif end_reason == "replay":
-                print("replay song")
-                self.play_history.append(
-                    (
-                        start_from["elapsed"],
-                        start_from["elapsed"] + time.time() - start_from["time"],
-                    )
-                )
+            elif status.get("state") == "stop":
                 break
 
-            elif end_reason == "stop":
-                print("stop song")
-                self.play_history.append((start_from["elapsed"], end_time))
-                break
+            status = await self.client.status()
 
-            elif end_reason == "new song":
-                self.play_history.append(
-                    (
-                        start_from["elapsed"],
-                        start_from["elapsed"] + time.time() - start_from["time"],
-                    )
-                )
-                break
+        self.playback_history = history
 
-        playback_status = self.get_playback_status(song)
-        print(playback_status)
+    def tasks_for_play(self, expected_end: float) -> list[asyncio.Task]:
+        pause_task = asyncio.create_task(self.pause())
+        seek_task = asyncio.create_task(self.seek(expected_end))
+        replay_task = asyncio.create_task(self.replay(expected_end))
+        new_song_task = asyncio.create_task(self.new_song())
+        stop_task = asyncio.create_task(self.stop())
 
-        await self.set_new_song()
+        return [pause_task, seek_task, replay_task, new_song_task, stop_task]
 
-        return playback_status
+    def tasks_for_pause(self) -> list[asyncio.Task]:
+        resume_task = asyncio.create_task(self.resume())
+        new_song_task = asyncio.create_task(self.new_song())
+        stop_task = asyncio.create_task(self.stop())
+
+        return [resume_task, new_song_task, stop_task]
+
+    async def resume(self):
+        async for _ in self.client.idle(["player"]):
+            status = await self.client.status()
+
+            if (
+                status.get("state") == "play"
+                and self.song == await self.client.currentsong()
+            ):
+                print("resume")
+                return
+
+    async def pause(self):
+        async for _ in self.client.idle(["player"]):
+            status = await self.client.status()
+
+            if status.get("state") == "pause":
+                print("pause")
+                return
+
+    async def seek(self, expected_end: float):
+        async for _ in self.client.idle(["player"]):
+            status = await self.client.status()
+
+            if (
+                status.get("state") == "play"
+                and self.song == await self.client.currentsong()
+                and 1 <= abs(time.time() - expected_end)
+            ):
+                print("seek")
+                return
+
+    async def replay(self, expected_end: float):
+        async for _ in self.client.idle(["player"]):
+            status = await self.client.status()
+
+            if (
+                status.get("state") == "play"
+                and self.song == await self.client.currentsong()
+                and abs(time.time() - expected_end) < 1
+            ):
+                print("replay")
+                return
+
+    async def new_song(self):
+        async for _ in self.client.idle(["player"]):
+            status = await self.client.status()
+
+            if (
+                status.get("state") == "play"
+                and self.song != await self.client.currentsong()
+            ):
+                print("new song")
+                return
+
+    # FIX: Do we care about playback status here?
+    async def stop(self):
+        async for _ in self.client.idle(["player"]):
+            status = await self.client.status()
+
+            if status.get("state") == "stop":
+                print("stop")
+                return
 
     def get_play_time(self) -> float:
-        if not self.play_history:
+        if not self.playback_history:
             return 0
 
-        self.play_history.sort(key=lambda x: x[0])
+        self.playback_history.sort(key=lambda x: x[0])
 
         total_play_time = 0
-        current_start = self.play_history[0][0]
-        current_end = self.play_history[0][1]
+        current_start = self.playback_history[0][0]
+        current_end = self.playback_history[0][1]
 
-        for start, end in self.play_history[1:]:
+        for start, end in self.playback_history[1:]:
             if start <= current_end:
                 current_end = max(current_end, end)
             else:
@@ -235,65 +303,15 @@ class PlaybackTracker:
 
         return total_play_time
 
-    def get_playback_status(self, song: Track) -> PlaybackStatus:
-        try:
-            play_threshold = min(
-                self.play_time,
-                float(song["duration"]) * self.play_percent,
-            )
-            skip_threshold = max(
-                self.skip_time,
-                float(song["duration"]) * self.skip_percent,
-            )
-        except KeyError:
-            play_threshold = self.play_time
-            skip_threshold = self.skip_time
-
+    def get_playback_status(self) -> PlaybackStatus:
         play_time = self.get_play_time()
 
-        if play_threshold < play_time:
+        if self.play_threshold < play_time:
             return "played"
-        elif play_time < skip_threshold:
+        elif play_time < self.skip_threshold:
             return "skipped"
         else:
             return "neither"
-
-    async def play_start(self) -> float:
-        async for _ in self.client.idle(["player"]):
-            status = await self.client.status()
-
-            if status.get("state") == "play":
-                try:
-                    print(f"play from {float(status['elapsed'])}")
-                    return float(status["elapsed"])
-
-                except KeyError:
-                    raise Exception("elapsed not found in status")
-
-        return 0
-
-    async def play_end(self, song: Track, expected_end: float) -> Optional[EndReason]:
-        async for _ in self.client.idle(["player"]):
-            status = await self.client.status()
-
-            if status.get("state") == "pause":
-                return "pause"
-
-            elif status.get("state") == "play":
-                current_song = await self.client.currentsong()
-                if song == current_song:
-                    # we're close to when the song expected to end.
-                    # Event probably not due to user input (aka seek).
-                    if abs(time.time() - expected_end) < 1:
-                        return "replay"
-                    else:
-                        return "seek"
-
-                else:
-                    return "new song"
-
-            elif status.get("state") == "stop":
-                return "stop"
 
 
 class MPDWrapper:
@@ -307,7 +325,6 @@ class MPDWrapper:
             print("connected to MPD version,", self.client.mpd_version)
 
             self.tracker = PlaybackTracker(self.client)
-            await self.tracker.set_new_song()
 
         except Exception as e:
             raise Exception(f"Connection failed: {e}")
