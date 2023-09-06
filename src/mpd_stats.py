@@ -1,7 +1,7 @@
 import asyncio
-from math import floor
 import time
-from typing import Literal, Optional, TypedDict
+from typing import Literal, TypedDict
+
 
 from mpd.asyncio import MPDClient
 
@@ -96,13 +96,14 @@ PlaybackStatus = Literal["played", "skipped", "neither"]
 class PlaybackTracker:
     def __init__(
         self,
-        client: MPDClient,
+        # beets_lib: Library,
         play_time: int = 240,
         play_percent: float = 0.5,
         skip_time: int = 20,
         skip_percent: float = 0,
     ):
-        self.client = client
+        self.client = MPDClient()
+        # self.beets_lib = beets_lib
 
         self.play_time = play_time
         self.play_percent = play_percent
@@ -115,7 +116,17 @@ class PlaybackTracker:
         self.play_from: PlayFrom
         self.playback_history: list[tuple[float, float]]
 
-        self.task = asyncio.create_task(self.track())
+    async def run(self):
+        self.client.disconnect()
+
+        try:
+            await self.client.connect("localhost", 6600)
+            print("connected to MPD version,", self.client.mpd_version)
+
+            self.task = await self.track()
+
+        except Exception as e:
+            raise Exception(f"Connection failed: {e}")
 
     async def track(self):
         while True:
@@ -294,6 +305,8 @@ class PlaybackTracker:
                 )
                 return
 
+    # Something happened around the time we expected the song to end,
+    # but the song is the same. Must be a replay.
     async def replay(self):
         async for _ in self.client.idle(["player"]):
             status = await self.client.status()
@@ -311,6 +324,7 @@ class PlaybackTracker:
                 print(f"  previous song played to {self.playback_history[-1][1]}")
                 return
 
+    # Song's changed
     async def new_song(self):
         async for _ in self.client.idle(["player"]):
             status = await self.client.status()
@@ -388,15 +402,13 @@ class MPDWrapper:
             await self.client.connect("localhost", 6600)
             print("connected to MPD version,", self.client.mpd_version)
 
-            self.tracker = PlaybackTracker(self.client)
-
         except Exception as e:
             raise Exception(f"Connection failed: {e}")
 
 
 async def main():
-    player = MPDWrapper()
-    await player.connect()
+    tracker = PlaybackTracker()
+    await tracker.run()
 
 
 if __name__ == "__main__":
