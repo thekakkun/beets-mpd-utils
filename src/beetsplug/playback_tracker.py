@@ -16,10 +16,14 @@ class PlayFrom(TypedDict):
     end_at: float
 
 
-PlaybackStatus = Literal["played", "skipped", "neither"]
-
-
 class PlaybackTracker:
+    """Tracks the playback of songs on MPD, and updates beets metadata accordingly.
+
+    Default thresholds:
+    - Play: more than 50% of track played or 240 seconds
+    - Skip: less than 0% of track played or 20 seconds
+    """
+
     def __init__(
         self,
         play_time: int = 240,
@@ -33,14 +37,13 @@ class PlaybackTracker:
         self.play_percent = play_percent
         self.skip_time = skip_time
         self.skip_percent = skip_percent
-        self.play_threshold: float
-        self.skip_threshold: float
 
         self.song: Track
         self.play_from: PlayFrom
         self.playback_history: list[tuple[float, float]]
 
     async def run(self, lib: Library):
+        """Connect to MPD, start tracking playback."""
         self.mpd.disconnect()
 
         try:
@@ -53,6 +56,11 @@ class PlaybackTracker:
             raise Exception(f"Connection failed: {e}")
 
     async def track(self, lib: Library):
+        """Main tracking loop.
+
+        Wait for song to be queued, track it's playback until a new song is set,
+        and update beets metadata.
+        """
         while True:
             await self.set_song()
             await self.track_playback()
@@ -62,6 +70,8 @@ class PlaybackTracker:
             print("\n")
 
     async def set_song(self):
+        """Wait for song to be set in MPD, then calculate play and skip thresholds for the song."""
+
         status = await self.mpd.status()
 
         # if player is in "stop" state, wait until otherwise
@@ -75,21 +85,8 @@ class PlaybackTracker:
             f"song: {self.song.get('artist', 'unknown')} - {self.song.get('title', 'unknown')}"
         )
 
-        # Set the play and skip threshold times
-        try:
-            self.play_threshold = min(
-                self.play_time,
-                float(self.song["duration"]) * self.play_percent,
-            )
-            self.skip_threshold = max(
-                self.skip_time,
-                float(self.song["duration"]) * self.skip_percent,
-            )
-        except KeyError:
-            self.play_threshold = self.play_time
-            self.skip_threshold = self.skip_time
-
     async def track_playback(self):
+        """Track MPD status, and store the playback history for song."""
         status = await self.mpd.status()
 
         # If tracker is starting mid-song, assume we've already played to that point.
@@ -157,6 +154,10 @@ class PlaybackTracker:
 
     # State set to play for song already being tracked
     async def resume(self):
+        """Fires when player resumes the current song.
+
+        Assumes to only be awaited when the player is in the pause state.
+        """
         async for _ in self.mpd.idle(["player"]):
             status = await self.mpd.status()
 
@@ -178,8 +179,11 @@ class PlaybackTracker:
                 print(f"- resume from {self.play_from['location']}")
                 return
 
-    # State set to pause
     async def pause(self):
+        """Fires when player pauses the current song.
+
+        Assumed to only be awaited when the player is in the play state.
+        """
         async for _ in self.mpd.idle(["player"]):
             status = await self.mpd.status()
 
@@ -196,6 +200,11 @@ class PlaybackTracker:
 
     # Same song, but elapsed time sufficiently different
     async def seek(self):
+        """Fires when user seeks through the song.
+
+        Ignored if event occurs around when we expect the song to end, in order to
+        differentiate from replay events (which are also same song, different location).
+        """
         async for _ in self.mpd.idle(["player"]):
             status = await self.mpd.status()
 
@@ -229,9 +238,12 @@ class PlaybackTracker:
                 )
                 return
 
-    # Something happened around the time we expected the song to end,
-    # but the song is the same. Must be a replay.
     async def replay(self):
+        """Fires when the song is replayed.
+
+        We define a replay as the player state changing around the time we expect
+        then song to end, but the song has remained the same.
+        """
         async for _ in self.mpd.idle(["player"]):
             status = await self.mpd.status()
 
@@ -248,8 +260,13 @@ class PlaybackTracker:
                 print(f"  previous song played to {self.playback_history[-1][1]}")
                 return
 
-    # Song's changed
     async def new_song(self):
+        """Fires when there's a new song
+
+        By the time this event occurs, it is too late to find out what location the previous
+        song was played to. Therefore, we calculate it from the current time and when playback
+        previously started.
+        """
         async for _ in self.mpd.idle(["player"]):
             status = await self.mpd.status()
 
@@ -270,8 +287,12 @@ class PlaybackTracker:
                 print(f"  previous song played to {self.playback_history[-1][1]}")
                 return
 
-    # A stopped song is neither played or skipped
     async def stop(self):
+        """Fires when the player has been stopped.
+
+        This deletes any history information about the track that was playing, so
+        the track will never be considered to be skipped or played.
+        """
         async for _ in self.mpd.idle(["player"]):
             status = await self.mpd.status()
 
@@ -282,6 +303,7 @@ class PlaybackTracker:
                 return
 
     def get_play_time(self) -> float:
+        """Calculate how many seconds of the song were played, based on the playback ranges."""
         if not self.playback_history:
             return 0
 
@@ -303,14 +325,31 @@ class PlaybackTracker:
 
         return total_play_time
 
-    def get_playback_status(self) -> PlaybackStatus:
+    def playback_status(self) -> Literal["played", "skipped", "neither"]:
+        """Get the playback status of the current song, based on current playback history."""
+
+        # Calculate the play and skip threshold times
         play_time = self.get_play_time()
 
         if play_time == 0:
             return "neither"
-        elif self.play_threshold < play_time:
+
+        try:
+            play_threshold = min(
+                self.play_time,
+                float(self.song["duration"]) * self.play_percent,
+            )
+            skip_threshold = max(
+                self.skip_time,
+                float(self.song["duration"]) * self.skip_percent,
+            )
+        except KeyError:
+            play_threshold = self.play_time
+            skip_threshold = self.skip_time
+
+        if play_threshold < play_time:
             return "played"
-        elif play_time < self.skip_threshold:
+        elif play_time < skip_threshold:
             return "skipped"
         else:
             return "neither"
