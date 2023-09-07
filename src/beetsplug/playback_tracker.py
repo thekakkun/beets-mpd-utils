@@ -1,13 +1,18 @@
 import asyncio
 import time
+from math import inf
+from os import path
 from typing import Literal, TypedDict
 
+from beets import config
 from beets.dbcore import types
-from beets.library import DateType, Library
+from beets.library import DateType, Library, PathQuery
 from beets.plugins import BeetsPlugin
 from beets.ui import Subcommand
 from mpd.asyncio import MPDClient
 from mpd_types import Track
+
+music_dir: str = config["directory"].get(str)  # type: ignore
 
 
 class PlayFrom(TypedDict):
@@ -65,8 +70,12 @@ class PlaybackTracker:
             await self.set_song()
             await self.track_playback()
 
-            print(self.playback_history)
-            print(f"played {self.get_play_time()} seconds of track")
+            playback_status = self.playback_status()
+            if playback_status == "played":
+                self.set_played(lib)
+            elif playback_status == "skipped":
+                self.set_skipped(lib)
+
             print("\n")
 
     async def set_song(self):
@@ -84,6 +93,7 @@ class PlaybackTracker:
         print(
             f"song: {self.song.get('artist', 'unknown')} - {self.song.get('title', 'unknown')}"
         )
+        return
 
     async def track_playback(self):
         """Track MPD status, and store the playback history for song."""
@@ -354,14 +364,40 @@ class PlaybackTracker:
         else:
             return "neither"
 
+    def set_played(self, lib: Library):
+        query = PathQuery("path", path.join(music_dir, self.song["file"]))
+
+        beets_song = lib.items(query).get()
+        beets_song["play_count"] = beets_song.get("play_count", 0) + 1
+        beets_song["last_played"] = time.time()
+        beets_song.store()
+        print(
+            f"song was played {beets_song['play_count']} times, most recently at {beets_song['last_played']}"
+        )
+
+        beets_album = beets_song.get_album()
+        beets_album["last_played"] = min(
+            song.get("last_played", inf) for song in beets_album.items()
+        )
+        beets_album.store(inherit=False)
+        print(f"album was last played at {beets_album['last_played']}")
+
+    def set_skipped(self, lib: Library):
+        query = PathQuery("path", path.join(music_dir, self.song["file"]))
+
+        beets_song = lib.items(query).get()
+        beets_song["skip_count"] = beets_song.get("play_count", 0) + 1
+        beets_song.store()
+        print(f"song was skipped {beets_song['skip_count']} times")
+
 
 class PlaybackTrackerPlugin(BeetsPlugin):
     item_types = {
         "play_count": types.INTEGER,
         "skip_count": types.INTEGER,
-        "last_played": DateType,
+        "last_played": DateType(),
     }
-    album_types = {"last_played": DateType}
+    album_types = {"last_played": DateType()}
 
     def __init__(self, name=None):
         super().__init__(name)
