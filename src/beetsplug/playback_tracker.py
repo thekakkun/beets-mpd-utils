@@ -2,328 +2,290 @@ import asyncio
 import time
 from math import inf
 from os import path
-from typing import Literal, TypedDict
+from typing import Literal
 
 from beets import config
 from beets.dbcore import types
-from beets.library import DateType, Library, PathQuery
+from beets.library import DateType
+from beets.library import Item as BeetSong
+from beets.library import Library, PathQuery
 from beets.plugins import BeetsPlugin
 from beets.ui import Subcommand
 from mpd.asyncio import MPDClient
-from mpd_types import Track
+from mpd.base import MPDError
+from mpd_types import Track as MPDSong
+
 
 music_dir: str = config["directory"].get(str)  # type: ignore
 
 
-class PlayFrom(TypedDict):
-    location: float
-    time: float
-    end_at: float
+class Song:
+    def __init__(self) -> None:
+        self.mpd: MPDSong
+        self.beet: BeetSong
+
+    @classmethod
+    async def now_playing(cls, client: MPDClient, lib: Library):
+        self = Song()
+
+        while (await client.status()).get("state") == "stop":
+            async for _ in client.idle(["player"]):
+                break
+
+        # MPD song data
+        self.mpd = await client.currentsong()
+
+        # beets song data
+        query = PathQuery("path", path.join(music_dir, self.mpd["file"]))
+        self.beet = lib.items(query).get()
+
+        return self
 
 
-class PlaybackTracker:
-    """Tracks the playback of songs on MPD, and updates beets metadata accordingly.
+class NoElapsedError(Exception):
+    pass
 
-    Default thresholds:
-    - Play: more than 50% of track played or 240 seconds
-    - Skip: less than 0% of track played or 20 seconds
-    """
 
+class MPDEvents:
     def __init__(
         self,
+        client: MPDClient,
+        song: MPDSong,
+    ) -> None:
+        self.client = client
+        self.song = song
+
+    async def play_from(self) -> float:
+        async for _ in self.client.idle(["player"]):
+            status = await self.client.status()
+
+            if (
+                status.get("status") == "play"
+                and self.song == await self.client.currentsong()
+            ):
+                try:
+                    return float(status["elapsed"])
+                except:
+                    raise NoElapsedError()
+
+        raise MPDError
+
+    async def pause_at(self) -> float:
+        async for _ in self.client.idle(["player"]):
+            status = await self.client.status()
+
+            if status.get("status") == "pause":
+                try:
+                    return float(status["elapsed"])
+                except:
+                    raise NoElapsedError()
+
+        raise MPDError
+
+    async def seek_to(self, expected_end: float) -> float:
+        async for _ in self.client.idle(["player"]):
+            status = await self.client.status()
+
+            if (
+                status.get("state") == "play"
+                and self.song == await self.client.currentsong()
+                and 1 < abs(time.time() - expected_end)
+            ):
+                try:
+                    return float(status["elapsed"])
+                except:
+                    raise NoElapsedError()
+
+        raise MPDError
+
+    async def replay(self, expected_end: float):
+        async for _ in self.client.idle(["player"]):
+            status = await self.client.status()
+
+            if (
+                status.get("state") == "play"
+                and self.song == await self.client.currentsong()
+                and abs(time.time() - expected_end) < 1
+            ):
+                return
+
+        raise MPDError
+
+    async def new_song(self):
+        async for _ in self.client.idle(["player"]):
+            status = await self.client.status()
+
+            if (
+                status.get("state") == "play"
+                and self.song != await self.client.currentsong()
+            ):
+                return
+
+        raise MPDError
+
+    async def stop(self):
+        async for _ in self.client.idle(["player"]):
+            status = await self.client.status()
+
+            if status.get("state") == "stop":
+                return
+
+        raise MPDError
+
+
+class Tracker(MPDEvents):
+    def __init__(
+        self,
+        client: MPDClient,
+        song: MPDSong,
+    ) -> None:
+        super().__init__(client, song)
+
+        self.song: MPDSong
+        self.play_threshold: float
+        self.skip_threshold: float
+
+        self.client: MPDClient
+        self.task: asyncio.Task
+
+        self.history: list[tuple[float, float]]
+        self.play_from_pos: float
+        self.play_from_time: float
+        self.expected_end: float
+
+    @classmethod
+    async def track(
+        cls,
+        client: MPDClient,
+        song: MPDSong,
         play_time: int = 240,
         play_percent: float = 0.5,
         skip_time: int = 20,
         skip_percent: float = 0,
     ):
-        self.mpd = MPDClient()
+        self = Tracker(client, song)
 
-        self.play_time = play_time
-        self.play_percent = play_percent
-        self.skip_time = skip_time
-        self.skip_percent = skip_percent
-
-        self.song: Track
-        self.play_from: PlayFrom
-        self.playback_history: list[tuple[float, float]]
-
-    async def run(self, lib: Library):
-        """Connect to MPD, start tracking playback."""
-        self.mpd.disconnect()
-
-        try:
-            await self.mpd.connect("localhost", 6600)
-            print("connected to MPD version,", self.mpd.mpd_version)
-
-            self.task = asyncio.create_task(self.track(lib))
-
-        except Exception as e:
-            raise Exception(f"Connection failed: {e}")
-
-    async def track(self, lib: Library):
-        """Main tracking loop.
-
-        Wait for song to be queued, track it's playback until a new song is set,
-        and update beets metadata.
-        """
-        while True:
-            await self.set_song()
-            await self.track_playback()
-
-            playback_status = self.playback_status()
-            if playback_status == "played":
-                self.set_played(lib)
-            elif playback_status == "skipped":
-                self.set_skipped(lib)
-
-            print("\n")
-
-    async def set_song(self):
-        """Wait for song to be set in MPD, then calculate play and skip thresholds for the song."""
-
-        status = await self.mpd.status()
-
-        # if player is in "stop" state, wait until otherwise
-        while status.get("state") == "stop":
-            async for _ in self.mpd.idle(["player"]):
-                status = await self.mpd.status()
-                break
-
-        self.song = await self.mpd.currentsong()
-        print(
-            f"song: {self.song.get('artist', 'unknown')} - {self.song.get('title', 'unknown')}"
+        self.play_threshold = min(
+            play_time,
+            float(self.song["duration"]) * play_percent,
         )
-        return
+        self.skip_threshold = max(
+            skip_time,
+            float(self.song["duration"]) * skip_percent,
+        )
 
-    async def track_playback(self):
-        """Track MPD status, and store the playback history for song."""
-        status = await self.mpd.status()
+        elapsed = float((await self.client.status()).get("elapsed", 0))
+        self.history = [(0, elapsed)] if elapsed else []
+        self.set_play_from(elapsed)
 
-        # If tracker is starting mid-song, assume we've already played to that point.
-        elapsed = float(status.get("elapsed", 0))
-        self.playback_history = [(0, elapsed)] if elapsed else []
+        self.task = asyncio.create_task(self.run())
 
-        # If song is already playing, initialize play_from with values
-        if status.get("state") == "play":
-            print(f"- start playing from {elapsed}")
-            self.play_from = {
-                "location": elapsed,
-                "time": time.time(),
-                "end_at": time.time() + float(self.song["duration"]) - elapsed,
-            }
-        else:
-            print(f"- start queued at {elapsed}")
+        return self
 
+    async def run(self):
         while True:
+            status = await self.client.status()
+
             if status.get("state") == "play":
-                pause_task = asyncio.create_task(self.pause())
-                seek_task = asyncio.create_task(self.seek())
-                replay_task = asyncio.create_task(self.replay())
-                new_song_task = asyncio.create_task(self.new_song())
-                stop_task = asyncio.create_task(self.stop())
+                pause = asyncio.create_task(self.pause_at())
+                seek = asyncio.create_task(self.seek_to(self.expected_end))
+                replay = asyncio.create_task(self.replay(self.expected_end))
+                new_song = asyncio.create_task(self.new_song())
+                stop = asyncio.create_task(self.stop())
 
                 [done], pending = await asyncio.wait(
-                    [
-                        pause_task,
-                        seek_task,
-                        replay_task,
-                        new_song_task,
-                        stop_task,
-                    ],
+                    [pause, seek, replay, new_song, stop],
                     return_when=asyncio.FIRST_COMPLETED,
                 )
 
                 for task in pending:
                     task.cancel()
 
-                if done in [replay_task, new_song_task, stop_task]:
+                if done == pause:
+                    position = pause.result()
+                    self.history.append((self.play_from_pos, position))
+
+                elif done == seek:
+                    self.history.append(
+                        (
+                            self.play_from_pos,
+                            self.play_from_pos + time.time() - self.play_from_time,
+                        )
+                    )
+                    position = seek.result()
+                    self.set_play_from(position)
+
+                elif done == replay:
+                    self.history.append(
+                        (self.play_from_pos, float(self.song["duration"]))
+                    )
+                    break
+
+                elif done == new_song:
+                    self.history.append(
+                        (
+                            self.play_from_pos,
+                            self.play_from_pos + time.time() - self.play_from_time,
+                        )
+                    )
+                    break
+
+                elif done == stop:
+                    self.history = []
                     break
 
             elif status.get("state") == "pause":
-                resume_task = asyncio.create_task(self.resume())
-                new_song_task = asyncio.create_task(self.new_song())
-                stop_task = asyncio.create_task(self.stop())
+                play = asyncio.create_task(self.play_from())
+                new_song = asyncio.create_task(self.new_song())
+                stop = asyncio.create_task(self.stop())
 
                 [done], pending = await asyncio.wait(
-                    [resume_task, new_song_task, stop_task],
+                    [play, new_song, stop],
                     return_when=asyncio.FIRST_COMPLETED,
                 )
 
                 for task in pending:
                     task.cancel()
 
-                if done in [new_song_task, stop_task]:
+                if done == play:
+                    position = play.result()
+                    self.set_play_from(position)
+
+                elif done == new_song:
+                    self.history.append(
+                        (
+                            self.play_from_pos,
+                            self.play_from_pos + time.time() - self.play_from_time,
+                        )
+                    )
+                    break
+
+                elif done == stop:
+                    self.history = []
                     break
 
             elif status.get("state") == "stop":
                 break
 
-            status = await self.mpd.status()
-
         return
 
-    # State set to play for song already being tracked
-    async def resume(self):
-        """Fires when player resumes the current song.
+    def set_play_from(self, position: float):
+        self.play_from_pos = position
+        self.play_from_time = time.time()
+        self.expected_end = time.time() + float(self.song["duration"]) - position
 
-        Assumes to only be awaited when the player is in the pause state.
-        """
-        async for _ in self.mpd.idle(["player"]):
-            status = await self.mpd.status()
-
-            if (
-                status.get("state") == "play"
-                and self.song == await self.mpd.currentsong()
-            ):
-                try:
-                    self.play_from = {
-                        "location": float(status["elapsed"]),
-                        "time": time.time(),
-                        "end_at": time.time()
-                        + float(self.song["duration"])
-                        - float(status["elapsed"]),
-                    }
-                except KeyError:
-                    continue
-
-                print(f"- resume from {self.play_from['location']}")
-                return
-
-    async def pause(self):
-        """Fires when player pauses the current song.
-
-        Assumed to only be awaited when the player is in the play state.
-        """
-        async for _ in self.mpd.idle(["player"]):
-            status = await self.mpd.status()
-
-            if status.get("state") == "pause":
-                try:
-                    self.playback_history.append(
-                        (self.play_from["location"], float(status["elapsed"]))
-                    )
-                except KeyError:
-                    continue
-
-                print(f"- pause at {self.playback_history[-1][1]}")
-                return
-
-    # Same song, but elapsed time sufficiently different
-    async def seek(self):
-        """Fires when user seeks through the song.
-
-        Ignored if event occurs around when we expect the song to end, in order to
-        differentiate from replay events (which are also same song, different location).
-        """
-        async for _ in self.mpd.idle(["player"]):
-            status = await self.mpd.status()
-
-            if (
-                status.get("state") == "play"
-                and self.song == await self.mpd.currentsong()
-                and 1 <= abs(time.time() - self.play_from["end_at"])
-            ):
-                self.playback_history.append(
-                    (
-                        self.play_from["location"],
-                        self.play_from["location"]
-                        + time.time()
-                        - self.play_from["time"],
-                    )
-                )
-
-                try:
-                    self.play_from = {
-                        "location": float(status["elapsed"]),
-                        "time": time.time(),
-                        "end_at": time.time()
-                        + float(self.song["duration"])
-                        - float(status["elapsed"]),
-                    }
-                except KeyError:
-                    continue
-
-                print(
-                    f"- seeked from {self.playback_history[-1][1]} to {self.play_from['location']}"
-                )
-                return
-
-    async def replay(self):
-        """Fires when the song is replayed.
-
-        We define a replay as the player state changing around the time we expect
-        then song to end, but the song has remained the same.
-        """
-        async for _ in self.mpd.idle(["player"]):
-            status = await self.mpd.status()
-
-            if (
-                status.get("state") == "play"
-                and self.song == await self.mpd.currentsong()
-                and abs(time.time() - self.play_from["end_at"]) < 1
-            ):
-                self.playback_history.append(
-                    (self.play_from["location"], float(self.song["duration"]))
-                )
-
-                print(f"- replay")
-                print(f"  previous song played to {self.playback_history[-1][1]}")
-                return
-
-    async def new_song(self):
-        """Fires when there's a new song
-
-        By the time this event occurs, it is too late to find out what location the previous
-        song was played to. Therefore, we calculate it from the current time and when playback
-        previously started.
-        """
-        async for _ in self.mpd.idle(["player"]):
-            status = await self.mpd.status()
-
-            if (
-                status.get("state") == "play"
-                and self.song != await self.mpd.currentsong()
-            ):
-                self.playback_history.append(
-                    (
-                        self.play_from["location"],
-                        self.play_from["location"]
-                        + time.time()
-                        - self.play_from["time"],
-                    )
-                )
-
-                print(f"- new song")
-                print(f"  previous song played to {self.playback_history[-1][1]}")
-                return
-
-    async def stop(self):
-        """Fires when the player has been stopped.
-
-        This deletes any history information about the track that was playing, so
-        the track will never be considered to be skipped or played.
-        """
-        async for _ in self.mpd.idle(["player"]):
-            status = await self.mpd.status()
-
-            if status.get("state") == "stop":
-                self.playback_history = []
-
-                print("- stop")
-                return
-
-    def get_play_time(self) -> float:
+    def play_time(self) -> float:
         """Calculate how many seconds of the song were played, based on the playback ranges."""
-        if not self.playback_history:
+        if not self.history:
             return 0
 
-        self.playback_history.sort(key=lambda x: x[0])
+        self.history.sort(key=lambda x: x[0])
 
         total_play_time = 0
-        current_start = self.playback_history[0][0]
-        current_end = self.playback_history[0][1]
+        current_start = self.history[0][0]
+        current_end = self.history[0][1]
 
-        for start, end in self.playback_history[1:]:
+        for start, end in self.history[1:]:
             if start <= current_end:
                 current_end = max(current_end, end)
             else:
@@ -335,63 +297,22 @@ class PlaybackTracker:
 
         return total_play_time
 
-    def playback_status(self) -> Literal["played", "skipped", "neither"]:
-        """Get the playback status of the current song, based on current playback history."""
+    def status(self) -> Literal["played", "skipped", "neither"]:
+        """Calculate the play and skip threshold times"""
 
-        # Calculate the play and skip threshold times
-        play_time = self.get_play_time()
+        play_time = self.play_time()
 
         if play_time == 0:
             return "neither"
-
-        try:
-            play_threshold = min(
-                self.play_time,
-                float(self.song["duration"]) * self.play_percent,
-            )
-            skip_threshold = max(
-                self.skip_time,
-                float(self.song["duration"]) * self.skip_percent,
-            )
-        except KeyError:
-            play_threshold = self.play_time
-            skip_threshold = self.skip_time
-
-        if play_threshold < play_time:
+        elif self.play_threshold < play_time:
             return "played"
-        elif play_time < skip_threshold:
+        elif play_time < self.skip_threshold:
             return "skipped"
         else:
             return "neither"
 
-    def set_played(self, lib: Library):
-        query = PathQuery("path", path.join(music_dir, self.song["file"]))
 
-        beets_song = lib.items(query).get()
-        beets_song["play_count"] = beets_song.get("play_count", 0) + 1
-        beets_song["last_played"] = time.time()
-        beets_song.store()
-        print(
-            f"song was played {beets_song['play_count']} times, most recently at {beets_song['last_played']}"
-        )
-
-        beets_album = beets_song.get_album()
-        beets_album["last_played"] = min(
-            song.get("last_played", inf) for song in beets_album.items()
-        )
-        beets_album.store(inherit=False)
-        print(f"album was last played at {beets_album['last_played']}")
-
-    def set_skipped(self, lib: Library):
-        query = PathQuery("path", path.join(music_dir, self.song["file"]))
-
-        beets_song = lib.items(query).get()
-        beets_song["skip_count"] = beets_song.get("play_count", 0) + 1
-        beets_song.store()
-        print(f"song was skipped {beets_song['skip_count']} times")
-
-
-class PlaybackTrackerPlugin(BeetsPlugin):
+class Plugin(BeetsPlugin):
     item_types = {
         "play_count": types.INTEGER,
         "skip_count": types.INTEGER,
@@ -401,13 +322,49 @@ class PlaybackTrackerPlugin(BeetsPlugin):
 
     def __init__(self, name=None):
         super().__init__(name)
-        self.tracker = PlaybackTracker()
+
+        self.mpd_client = MPDClient()
+
+    def set_played(self, item: BeetSong):
+        # update song
+        item["play_count"] = item.get("play_count", 0) + 1
+        item["last_played"] = time.time()
+        item.store()
+
+        # update album
+        album = item.get_album()
+        if album:
+            album["last_played"] = min(
+                song.get("last_played", inf) for song in album.items()
+            )
+            album.store(inherit=False)
+
+    def set_skipped(self, item: BeetSong):
+        item["skip_count"] = item.get("skip_count", 0) + 1
+        item.store()
+
+    async def run(self, lib):
+        self.mpd_client.disconnect()
+
+        try:
+            await self.mpd_client.connect("localhost", 6600)
+            print("connected to MPD version,", self.mpd_client.mpd_version)
+        except Exception as e:
+            raise Exception(f"Connection failed: {e}")
+
+        while True:
+            song = await Song.now_playing(self.mpd_client, lib)
+            tracker = await Tracker.track(self.mpd_client, song.mpd)
+            playback_status = tracker.status()
+
+            if playback_status == "played":
+                self.set_played(song.beet)
+            elif playback_status == "skipped":
+                self.set_skipped(song.beet)
 
     def commands(self):
         def _func(lib, opts, args):
-            with asyncio.Runner() as runner:
-                runner.run(self.tracker.run(lib))
-                runner.get_loop().run_forever()
+            asyncio.run(self.run(lib))
 
         cmd = Subcommand(
             "playbacktracker",
