@@ -1,4 +1,5 @@
 import asyncio
+from logging import Logger
 import time
 from math import inf
 from os import path
@@ -25,10 +26,11 @@ class Song:
         self.beet: BeetSong
 
     @classmethod
-    async def now_playing(cls, client: MPDClient, lib: Library):
+    async def now_playing(cls, log: Logger, client: MPDClient, lib: Library):
         self = Song()
 
         while (await client.status()).get("state") == "stop":
+            log.debug("Player stopped. Waiting for song.")
             async for _ in client.idle(["player"]):
                 break
 
@@ -38,6 +40,8 @@ class Song:
         # beets song data
         query = PathQuery("path", path.join(music_dir, self.mpd["file"]))
         self.beet = lib.items(query).get()
+
+        log.debug(f"{(await client.status())['state']}: {self.beet}")
 
         return self
 
@@ -136,10 +140,12 @@ class MPDEvents:
 class Tracker(MPDEvents):
     def __init__(
         self,
+        log: Logger,
         client: MPDClient,
         song: MPDSong,
     ) -> None:
         super().__init__(client, song)
+        self.log = log
 
         self.song: MPDSong
         self.play_threshold: float
@@ -156,6 +162,7 @@ class Tracker(MPDEvents):
     @classmethod
     async def track(
         cls,
+        log: Logger,
         client: MPDClient,
         song: MPDSong,
         play_time: int = 240,
@@ -163,7 +170,7 @@ class Tracker(MPDEvents):
         skip_time: int = 20,
         skip_percent: float = 0,
     ):
-        self = Tracker(client, song)
+        self = Tracker(log, client, song)
 
         self.play_threshold = min(
             play_time,
@@ -176,15 +183,19 @@ class Tracker(MPDEvents):
 
         elapsed = float((await self.client.status()).get("elapsed", 0))
         self.history = [(0, elapsed)] if elapsed else []
-        self.set_play_from(elapsed)
+        self.set_position(elapsed)
+        self.log.debug(f"Setting player position at {elapsed}")
 
         self.task = asyncio.create_task(self.run())
+
+        await self.task
 
         return self
 
     async def run(self):
         while True:
             status = await self.client.status()
+            print(status.get("state"))
 
             if status.get("state") == "play":
                 pause = asyncio.create_task(self.pause_at())
@@ -204,6 +215,7 @@ class Tracker(MPDEvents):
                 if done == pause:
                     position = pause.result()
                     self.history.append((self.play_from_pos, position))
+                    self.log.debug(f"Paused at {position}.")
 
                 elif done == seek:
                     self.history.append(
@@ -213,12 +225,16 @@ class Tracker(MPDEvents):
                         )
                     )
                     position = seek.result()
-                    self.set_play_from(position)
+                    self.set_position(position)
+                    self.log.debug(
+                        f"Seeked from {self.play_from_pos + time.time() - self.play_from_time} to {position}."
+                    )
 
                 elif done == replay:
                     self.history.append(
                         (self.play_from_pos, float(self.song["duration"]))
                     )
+                    self.log.debug("Replaying song.")
                     break
 
                 elif done == new_song:
@@ -228,10 +244,14 @@ class Tracker(MPDEvents):
                             self.play_from_pos + time.time() - self.play_from_time,
                         )
                     )
+                    self.log.debug(
+                        f"Playing new song. Last track played to {self.play_from_pos + time.time() - self.play_from_time,}."
+                    )
                     break
 
                 elif done == stop:
                     self.history = []
+                    self.log.debug("Stopping song.")
                     break
 
             elif status.get("state") == "pause":
@@ -249,7 +269,8 @@ class Tracker(MPDEvents):
 
                 if done == play:
                     position = play.result()
-                    self.set_play_from(position)
+                    self.set_position(position)
+                    self.log.debug(f"Playing from {position}")
 
                 elif done == new_song:
                     self.history.append(
@@ -258,10 +279,14 @@ class Tracker(MPDEvents):
                             self.play_from_pos + time.time() - self.play_from_time,
                         )
                     )
+                    self.log.debug(
+                        f"Playing new song. Last track played to {self.play_from_pos + time.time() - self.play_from_time,}."
+                    )
                     break
 
                 elif done == stop:
                     self.history = []
+                    self.log.debug("Stopping song.")
                     break
 
             elif status.get("state") == "stop":
@@ -269,7 +294,7 @@ class Tracker(MPDEvents):
 
         return
 
-    def set_play_from(self, position: float):
+    def set_position(self, position: float):
         self.play_from_pos = position
         self.play_from_time = time.time()
         self.expected_end = time.time() + float(self.song["duration"]) - position
@@ -348,13 +373,13 @@ class Plugin(BeetsPlugin):
 
         try:
             await self.mpd_client.connect("localhost", 6600)
-            print("connected to MPD version,", self.mpd_client.mpd_version)
+            self._log.debug(f"connected to MPD version: {self.mpd_client.mpd_version}")
         except Exception as e:
             raise Exception(f"Connection failed: {e}")
 
         while True:
-            song = await Song.now_playing(self.mpd_client, lib)
-            tracker = await Tracker.track(self.mpd_client, song.mpd)
+            song = await Song.now_playing(self._log, self.mpd_client, lib)
+            tracker = await Tracker.track(self._log, self.mpd_client, song.mpd)
             playback_status = tracker.status()
 
             if playback_status == "played":
