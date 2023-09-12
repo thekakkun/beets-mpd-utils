@@ -18,15 +18,22 @@ from mpd_types import Track as MPDSong
 
 
 music_dir: str = config["directory"].get(str)  # type: ignore
+time_format: str = config["time_format"].get(str)  # type: ignore
 
 
 class Song:
+    """Keeps track of the currently playing song.
+
+    Initialize with the `now_playing` method, and it should await until MPD has a song loaded
+    """
+
     def __init__(self) -> None:
         self.mpd: MPDSong
         self.beet: BeetSong
 
     @classmethod
     async def now_playing(cls, log: Logger, client: MPDClient, lib: Library):
+        """Wait for a song to be loaded in MPD, then get the Beets item."""
         self = Song()
 
         while (await client.status()).get("state") == "stop":
@@ -51,6 +58,8 @@ class NoElapsedError(Exception):
 
 
 class MPDEvents:
+    """A collection of events that could occur for the MPD Player Submodule"""
+
     def __init__(
         self,
         client: MPDClient,
@@ -60,11 +69,12 @@ class MPDEvents:
         self.song = song
 
     async def play_from(self) -> float:
+        """Start playback. Returns player position at point of playback."""
         async for _ in self.client.idle(["player"]):
             status = await self.client.status()
 
             if (
-                status.get("status") == "play"
+                status.get("state") == "play"
                 and self.song == await self.client.currentsong()
             ):
                 try:
@@ -75,10 +85,11 @@ class MPDEvents:
         raise MPDError
 
     async def pause_at(self) -> float:
+        """Playback paused. Returns player position at point of pause"""
         async for _ in self.client.idle(["player"]):
             status = await self.client.status()
 
-            if status.get("status") == "pause":
+            if status.get("state") == "pause":
                 try:
                     return float(status["elapsed"])
                 except:
@@ -87,6 +98,11 @@ class MPDEvents:
         raise MPDError
 
     async def seek_to(self, expected_end: float) -> float:
+        """Player seeked. Returns position user seeked to.
+
+        This requires the time we expect the song to naturally end, so that it can be
+        differentiated from `replay` events.
+        """
         async for _ in self.client.idle(["player"]):
             status = await self.client.status()
 
@@ -103,6 +119,11 @@ class MPDEvents:
         raise MPDError
 
     async def replay(self, expected_end: float):
+        """Song replayed
+
+        This requires the time we expect the song to naturally end, so that it can be
+        differentiated from `seek_to` events.
+        """
         async for _ in self.client.idle(["player"]):
             status = await self.client.status()
 
@@ -116,6 +137,7 @@ class MPDEvents:
         raise MPDError
 
     async def new_song(self):
+        """New song queued in player."""
         async for _ in self.client.idle(["player"]):
             status = await self.client.status()
 
@@ -128,6 +150,7 @@ class MPDEvents:
         raise MPDError
 
     async def stop(self):
+        """Player stopped."""
         async for _ in self.client.idle(["player"]):
             status = await self.client.status()
 
@@ -138,6 +161,13 @@ class MPDEvents:
 
 
 class Tracker(MPDEvents):
+    """Tracks the playback of songs on MPD, and updates beets metadata accordingly.
+
+    Default thresholds:
+    - Play: more than 50% of track played or 240 seconds
+    - Skip: less than 0% of track played or 20 seconds
+    """
+
     def __init__(
         self,
         log: Logger,
@@ -170,6 +200,10 @@ class Tracker(MPDEvents):
         skip_time: int = 20,
         skip_percent: float = 0,
     ):
+        """Define playback status thresholds, and start tracking MPD playback.
+
+        Returns the `Track()` instance once song has ended.
+        """
         self = Tracker(log, client, song)
 
         self.play_threshold = min(
@@ -187,15 +221,14 @@ class Tracker(MPDEvents):
         self.log.debug(f"Setting player position at {elapsed}")
 
         self.task = asyncio.create_task(self.run())
-
         await self.task
 
         return self
 
     async def run(self):
+        """Main tracking loop."""
         while True:
             status = await self.client.status()
-            print(status.get("state"))
 
             if status.get("state") == "play":
                 pause = asyncio.create_task(self.pause_at())
@@ -218,17 +251,17 @@ class Tracker(MPDEvents):
                     self.log.debug(f"Paused at {position}.")
 
                 elif done == seek:
+                    position = seek.result()
                     self.history.append(
                         (
                             self.play_from_pos,
                             self.play_from_pos + time.time() - self.play_from_time,
                         )
                     )
-                    position = seek.result()
-                    self.set_position(position)
                     self.log.debug(
                         f"Seeked from {self.play_from_pos + time.time() - self.play_from_time} to {position}."
                     )
+                    self.set_position(position)
 
                 elif done == replay:
                     self.history.append(
@@ -245,7 +278,7 @@ class Tracker(MPDEvents):
                         )
                     )
                     self.log.debug(
-                        f"Playing new song. Last track played to {self.play_from_pos + time.time() - self.play_from_time,}."
+                        f"Playing new song. Last track played to {self.play_from_pos + time.time() - self.play_from_time}."
                     )
                     break
 
@@ -295,6 +328,7 @@ class Tracker(MPDEvents):
         return
 
     def set_position(self, position: float):
+        """Set player position, time, and expected end time."""
         self.play_from_pos = position
         self.play_from_time = time.time()
         self.expected_end = time.time() + float(self.song["duration"]) - position
@@ -351,29 +385,45 @@ class Plugin(BeetsPlugin):
         self.mpd_client = MPDClient()
 
     def set_played(self, item: BeetSong):
-        # update song
+        """Increment the `play_count` flexible attribute for the item, and set `last_played`
+        
+        In addition, if all songs in the album have been played at some point,
+        set the album's `last_played` flexible attribute as the oldest `last_played`
+        attribuite of the songs in the album.
+        """
+        # set song metadata
         item["play_count"] = item.get("play_count", 0) + 1
         item["last_played"] = time.time()
         item.store()
+        self._log.info(
+            f"{item} played {item['play_count']} times at {time.strftime(time_format, time.localtime(item['last_played']))}"
+        )
 
-        # update album
+        # set album metadata
         album = item.get_album()
         if album:
-            album["last_played"] = min(
-                song.get("last_played", inf) for song in album.items()
-            )
-            album.store(inherit=False)
+            songs_last_played_at = [song.get("last_played") for song in album.items()]
+
+            if all(songs_last_played_at):
+                album["last_played"] = min(songs_last_played_at)
+                album.store(inherit=False)
+                self._log.info(
+                    f"{album} last played at {time.strftime(time_format, time.localtime(album['last_played']))}"
+                )
 
     def set_skipped(self, item: BeetSong):
+        """Increment the `skip_count` flexible attribute for the item."""
         item["skip_count"] = item.get("skip_count", 0) + 1
+        self._log.info(f"{item} skipped")
         item.store()
 
     async def run(self, lib):
+        """Main plugin function. Connect to MPD, then start tracking songs."""
         self.mpd_client.disconnect()
 
         try:
             await self.mpd_client.connect("localhost", 6600)
-            self._log.debug(f"connected to MPD version: {self.mpd_client.mpd_version}")
+            self._log.info(f"connected to MPD version: {self.mpd_client.mpd_version}")
         except Exception as e:
             raise Exception(f"Connection failed: {e}")
 
