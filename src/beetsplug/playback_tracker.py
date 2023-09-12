@@ -1,7 +1,6 @@
 import asyncio
-from logging import Logger
 import time
-from math import inf
+from logging import Logger
 from os import path
 from typing import Literal
 
@@ -15,7 +14,6 @@ from beets.ui import Subcommand
 from mpd.asyncio import MPDClient
 from mpd.base import MPDError
 from mpd_types import Track as MPDSong
-
 
 music_dir: str = config["directory"].get(str)  # type: ignore
 time_format: str = config["time_format"].get(str)  # type: ignore
