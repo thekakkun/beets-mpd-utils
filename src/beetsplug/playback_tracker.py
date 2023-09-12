@@ -149,12 +149,30 @@ class MPDEvents:
 
         raise MPDError
 
-    async def stop(self):
-        """Player stopped."""
+    async def stop(self, expected_end: float):
+        """Player stopped.
+
+        This requires the time we expect the song to naturally end, so that it can be
+        differentiated from `playlist_end` events.
+        """
         async for _ in self.client.idle(["player"]):
             status = await self.client.status()
 
-            if status.get("state") == "stop":
+            if status.get("state") == "stop" and 1 < abs(time.time() - expected_end):
+                return
+
+        raise MPDError
+
+    async def playlist_end(self, expected_end: float):
+        """Reached end of playlist.
+
+        This requires the time we expect the song to naturally end, so that it can be
+        differentiated from `stop` events.
+        """
+        async for _ in self.client.idle(["player"]):
+            status = await self.client.status()
+
+            if status.get("state") == "stop" and abs(time.time() - expected_end) < 1:
                 return
 
         raise MPDError
@@ -235,10 +253,11 @@ class Tracker(MPDEvents):
                 seek = asyncio.create_task(self.seek_to(self.expected_end))
                 replay = asyncio.create_task(self.replay(self.expected_end))
                 new_song = asyncio.create_task(self.new_song())
-                stop = asyncio.create_task(self.stop())
+                stop = asyncio.create_task(self.stop(self.expected_end))
+                playlist_end = asyncio.create_task(self.playlist_end(self.expected_end))
 
                 [done], pending = await asyncio.wait(
-                    [pause, seek, replay, new_song, stop],
+                    [pause, seek, replay, new_song, stop, playlist_end],
                     return_when=asyncio.FIRST_COMPLETED,
                 )
 
@@ -287,10 +306,18 @@ class Tracker(MPDEvents):
                     self.log.debug("Stopping song.")
                     break
 
+                elif done == playlist_end:
+                    self.history.append(
+                        (self.play_from_pos, float(self.song["duration"]))
+                    )
+                    self.log.debug("Playlist ended.")
+                    break
+
             elif status.get("state") == "pause":
                 play = asyncio.create_task(self.play_from())
                 new_song = asyncio.create_task(self.new_song())
-                stop = asyncio.create_task(self.stop())
+                # expected end time doesn't matter. Song isn't playing
+                stop = asyncio.create_task(self.stop(0))
 
                 [done], pending = await asyncio.wait(
                     [play, new_song, stop],
@@ -386,7 +413,7 @@ class Plugin(BeetsPlugin):
 
     def set_played(self, item: BeetSong):
         """Increment the `play_count` flexible attribute for the item, and set `last_played`
-        
+
         In addition, if all songs in the album have been played at some point,
         set the album's `last_played` flexible attribute as the oldest `last_played`
         attribuite of the songs in the album.
