@@ -403,7 +403,7 @@ class Tracker(MPDEvents):
             return "neither"
 
 
-class PlaybackTrackerPlugin(BeetsPlugin):
+class MPDTracker(BeetsPlugin):
     item_types = {
         "play_count": types.INTEGER,
         "skip_count": types.INTEGER,
@@ -507,9 +507,8 @@ class PlaybackTrackerPlugin(BeetsPlugin):
             asyncio.run(self.run(lib))
 
         cmd = Subcommand(
-            "playbacktracker",
+            "tracker",
             help="Log play count, skip count, and last played from MPD",
-            aliases=("pt",),
         )
         cmd.func = _func
 
