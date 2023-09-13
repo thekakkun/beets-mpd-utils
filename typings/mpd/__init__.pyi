@@ -1,6 +1,5 @@
 from typing import Literal, TypedDict
 
-
 class StatusBase(TypedDict):
     repeat: Literal["0", "1"]
     random: Literal["0", "1"]
@@ -12,7 +11,6 @@ class StatusBase(TypedDict):
     mixrampdb: str
     state: Literal["play", "stop", "pause"]
 
-
 class Status(StatusBase, total=False):
     song: str
     songid: str
@@ -23,7 +21,6 @@ class Status(StatusBase, total=False):
     audio: str
     nextsong: str
     nextsongid: str
-
 
 # Using functional syntax because "last-modified" has a dash
 TrackBase = TypedDict(
@@ -38,7 +35,6 @@ TrackBase = TypedDict(
         "id": str,
     },
 )
-
 
 class Track(TrackBase, total=False):
     artist: str
@@ -59,7 +55,6 @@ class Track(TrackBase, total=False):
     musicbrainz_albumartistid: str
     musicbrainz_releasetrackid: str
     musicbrainz_trackid: str
-
 
 Subsystems = Literal[
     "database",
