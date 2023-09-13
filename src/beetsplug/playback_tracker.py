@@ -2,7 +2,7 @@ import asyncio
 import time
 from logging import Logger
 from os import path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from beets import config
 from beets.dbcore import types
@@ -11,12 +11,13 @@ from beets.library import Item as BeetSong
 from beets.library import Library, PathQuery
 from beets.plugins import BeetsPlugin
 from beets.ui import Subcommand
-from mpd import Track as MPDSong
 from mpd.asyncio import MPDClient
 from mpd.base import MPDError
+from mpd_types import Track as MPDSong
 
-music_dir: str = config["directory"].get(str)  # type: ignore
-time_format: str = config["time_format"].get(str)  # type: ignore
+mpd_config = config["mpd"]
+music_dir: str = config["directory"].get(str)
+time_format: str = config["time_format"].get(str)
 
 
 class Song:

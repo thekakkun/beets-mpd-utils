@@ -1,6 +1,6 @@
 from typing import AsyncGenerator, Optional
 
-from mpd import Status, Subsystems, Track
+from mpd_types import Status, Subsystems, Track
 
 class MPDClient:
     mpd_version: str
