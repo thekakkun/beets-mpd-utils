@@ -2,7 +2,7 @@ import asyncio
 import time
 from logging import Logger
 from os import path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from beets import config
 from beets.dbcore import types
@@ -13,6 +13,8 @@ from beets.plugins import BeetsPlugin
 from beets.ui import Subcommand
 from mpd.asyncio import MPDClient
 from mpd.base import MPDError
+from systemd.journal import JournalHandler
+
 from mpd_types import Track as MPDSong
 
 mpd_config = config["mpd"]
@@ -411,6 +413,7 @@ class PlaybackTrackerPlugin(BeetsPlugin):
 
     def __init__(self, name=None):
         super().__init__(name)
+        self._log.addHandler(JournalHandler())
 
         self.mpd_client = MPDClient()
 
