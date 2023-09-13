@@ -1,7 +1,7 @@
 import asyncio
 import time
 from logging import Logger
-from os import path
+import os
 from typing import Literal
 
 from beets import config
@@ -46,7 +46,7 @@ class Song:
         self.mpd = await client.currentsong()
 
         # beets song data
-        query = PathQuery("path", path.join(music_dir, self.mpd["file"]))
+        query = PathQuery("path", os.path.join(music_dir, self.mpd["file"]))
         self.beet = lib.items(query).get()
 
         log.info("Start tracking: {}", self.beet)
@@ -214,10 +214,10 @@ class Tracker(MPDEvents):
         log: Logger,
         client: MPDClient,
         song: MPDSong,
-        play_time: int = 240,
-        play_percent: float = 0.5,
-        skip_time: int = 20,
-        skip_percent: float = 0,
+        play_time: int,
+        play_percent: float,
+        skip_time: int,
+        skip_percent: float,
     ):
         """Define playback status thresholds, and start tracking MPD playback.
 
@@ -414,8 +414,55 @@ class PlaybackTrackerPlugin(BeetsPlugin):
     def __init__(self, name=None):
         super().__init__(name)
         self._log.addHandler(JournalHandler())
+        self.config.add(
+            {
+                "play_time": 240,
+                "play_percent": 0.5,
+                "skip_time": 20,
+                "skip_percent": 0,
+            }
+        )
+
+        mpd_config.add(
+            {
+                "host": os.environ.get("MPD_HOST", "localhost"),
+                "port": int(os.environ.get("MPD_PORT", 6600)),
+                "password": "",
+            }
+        )
+        mpd_config["password"].redact = True
 
         self.mpd_client = MPDClient()
+
+    async def run(self, lib):
+        """Main plugin function. Connect to MPD, then start tracking songs."""
+        self.mpd_client.disconnect()
+
+        try:
+            await self.mpd_client.connect(
+                mpd_config["host"].get(), mpd_config["port"].get()
+            )
+            self._log.info("connected to MPD version {}", self.mpd_client.mpd_version)
+        except Exception as e:
+            raise Exception("Connection failed: {}", e)
+
+        while True:
+            song = await Song.now_playing(self._log, self.mpd_client, lib)
+            tracker = await Tracker.track(
+                self._log,
+                self.mpd_client,
+                song.mpd,
+                self.config["play_time"].get(int),
+                self.config["play_percent"].get(float),
+                self.config["skip_time"].get(int),
+                self.config["skip_time"].get(float),
+            )
+            playback_status = tracker.status()
+
+            if playback_status == "played":
+                self.set_played(song.beet)
+            elif playback_status == "skipped":
+                self.set_skipped(song.beet)
 
     def set_played(self, item: BeetSong):
         """Increment the `play_count` flexible attribute for the item, and set `last_played`
@@ -454,26 +501,6 @@ class PlaybackTrackerPlugin(BeetsPlugin):
         item["skip_count"] = item.get("skip_count", 0) + 1
         self._log.info("{} skipped", item)
         item.store()
-
-    async def run(self, lib):
-        """Main plugin function. Connect to MPD, then start tracking songs."""
-        self.mpd_client.disconnect()
-
-        try:
-            await self.mpd_client.connect("localhost", 6600)
-            self._log.info("connected to MPD version {}", self.mpd_client.mpd_version)
-        except Exception as e:
-            raise Exception("Connection failed: {}", e)
-
-        while True:
-            song = await Song.now_playing(self._log, self.mpd_client, lib)
-            tracker = await Tracker.track(self._log, self.mpd_client, song.mpd)
-            playback_status = tracker.status()
-
-            if playback_status == "played":
-                self.set_played(song.beet)
-            elif playback_status == "skipped":
-                self.set_skipped(song.beet)
 
     def commands(self):
         def _func(lib, opts, args):
