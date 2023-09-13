@@ -46,7 +46,7 @@ class Song:
         query = PathQuery("path", path.join(music_dir, self.mpd["file"]))
         self.beet = lib.items(query).get()
 
-        log.debug(f"{(await client.status())['state']}: {self.beet}")
+        log.info("Start tracking: {}", self.beet)
 
         return self
 
@@ -234,7 +234,7 @@ class Tracker(MPDEvents):
         elapsed = float((await self.client.status()).get("elapsed", 0))
         self.history = [(0, elapsed)] if elapsed else []
         self.set_position(elapsed)
-        self.log.debug(f"Setting player position at {elapsed}")
+        self.log.debug("Setting player position at {}", elapsed)
 
         self.task = asyncio.create_task(self.run())
         await self.task
@@ -265,7 +265,7 @@ class Tracker(MPDEvents):
                 if done == pause:
                     position = pause.result()
                     self.history.append((self.play_from_pos, position))
-                    self.log.debug(f"Paused at {position}.")
+                    self.log.debug("Paused at {}.", position)
 
                 elif done == seek:
                     position = seek.result()
@@ -276,7 +276,9 @@ class Tracker(MPDEvents):
                         )
                     )
                     self.log.debug(
-                        f"Seeked from {self.play_from_pos + time.time() - self.play_from_time} to {position}."
+                        "Seeked from {} to {}.",
+                        self.play_from_pos + time.time() - self.play_from_time,
+                        position,
                     )
                     self.set_position(position)
 
@@ -295,7 +297,8 @@ class Tracker(MPDEvents):
                         )
                     )
                     self.log.debug(
-                        f"Playing new song. Last track played to {self.play_from_pos + time.time() - self.play_from_time}."
+                        "Playing new song. Last track played to {}.",
+                        self.play_from_pos + time.time() - self.play_from_time,
                     )
                     break
 
@@ -328,7 +331,7 @@ class Tracker(MPDEvents):
                 if done == play:
                     position = play.result()
                     self.set_position(position)
-                    self.log.debug(f"Playing from {position}")
+                    self.log.debug("Playing from {}", position)
 
                 elif done == new_song:
                     self.history.append(
@@ -338,7 +341,8 @@ class Tracker(MPDEvents):
                         )
                     )
                     self.log.debug(
-                        f"Playing new song. Last track played to {self.play_from_pos + time.time() - self.play_from_time,}."
+                        "Playing new song. Last track played to {}.",
+                        self.play_from_pos + time.time() - self.play_from_time,
                     )
                     break
 
@@ -396,7 +400,7 @@ class Tracker(MPDEvents):
             return "neither"
 
 
-class Plugin(BeetsPlugin):
+class PlaybackTrackerPlugin(BeetsPlugin):
     item_types = {
         "play_count": types.INTEGER,
         "skip_count": types.INTEGER,
@@ -421,7 +425,10 @@ class Plugin(BeetsPlugin):
         item["last_played"] = time.time()
         item.store()
         self._log.info(
-            f"{item} played {item['play_count']} times at {time.strftime(time_format, time.localtime(item['last_played']))}"
+            "{} played {} times at {}",
+            item,
+            item["play_count"],
+            time.strftime(time_format, time.localtime(item["last_played"])),
         )
 
         # set album metadata
@@ -433,13 +440,15 @@ class Plugin(BeetsPlugin):
                 album["last_played"] = min(songs_last_played_at)
                 album.store(inherit=False)
                 self._log.info(
-                    f"{album} last played at {time.strftime(time_format, time.localtime(album['last_played']))}"
+                    "{} last played at {}",
+                    album,
+                    time.strftime(time_format, time.localtime(album["last_played"])),
                 )
 
     def set_skipped(self, item: BeetSong):
         """Increment the `skip_count` flexible attribute for the item."""
         item["skip_count"] = item.get("skip_count", 0) + 1
-        self._log.info(f"{item} skipped")
+        self._log.info("{} skipped", item)
         item.store()
 
     async def run(self, lib):
@@ -448,9 +457,9 @@ class Plugin(BeetsPlugin):
 
         try:
             await self.mpd_client.connect("localhost", 6600)
-            self._log.info(f"connected to MPD version: {self.mpd_client.mpd_version}")
+            self._log.info("connected to MPD version {}", self.mpd_client.mpd_version)
         except Exception as e:
-            raise Exception(f"Connection failed: {e}")
+            raise Exception("Connection failed: {}", e)
 
         while True:
             song = await Song.now_playing(self._log, self.mpd_client, lib)
