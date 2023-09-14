@@ -13,7 +13,6 @@ from beets.plugins import BeetsPlugin
 from beets.ui import Subcommand
 from mpd.asyncio import MPDClient
 from mpd.base import MPDError
-from systemd.journal import JournalHandler
 
 from mpd_types import Track as MPDSong
 
@@ -413,7 +412,7 @@ class MPDTracker(BeetsPlugin):
 
     def __init__(self, name=None):
         super().__init__(name)
-        self._log.addHandler(JournalHandler())
+
         self.config.add(
             {
                 "play_time": 240,
