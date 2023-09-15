@@ -1,24 +1,24 @@
+"""A Beets plugin to track MPD playback status."""
+
+
 import asyncio
 import os
 import time
 from logging import Logger
 from typing import Literal
 
-from beets import config
+import beets
+from beets import library, plugins, ui
 from beets.dbcore import types
-from beets.library import DateType
 from beets.library import Item as BeetSong
-from beets.library import Library, PathQuery
-from beets.plugins import BeetsPlugin
-from beets.ui import Subcommand
+from mpd import MPDError
 from mpd.asyncio import MPDClient
-from mpd.base import MPDError
 
 from mpd_types import Track as MPDSong
 
-mpd_config = config["mpd"]
-music_dir: str = config["directory"].get(str)
-time_format: str = config["time_format"].get(str)
+mpd_config = beets.config["mpd"]
+music_dir: str = beets.config["directory"].get(str)
+time_format: str = beets.config["time_format"].get(str)
 
 
 class Song:
@@ -32,7 +32,7 @@ class Song:
         self.beet: BeetSong
 
     @classmethod
-    async def now_playing(cls, log: Logger, client: MPDClient, lib: Library):
+    async def now_playing(cls, log: Logger, client: MPDClient, lib: library.Library):
         """Wait for a song to be loaded in MPD, then get the Beets item."""
         self = Song()
 
@@ -45,7 +45,7 @@ class Song:
         self.mpd = await client.currentsong()
 
         # beets song data
-        query = PathQuery("path", os.path.join(music_dir, self.mpd["file"]))
+        query = library.PathQuery("path", os.path.join(music_dir, self.mpd["file"]))
         self.beet = lib.items(query).get()
 
         log.info("Start tracking: {}", self.beet)
@@ -54,7 +54,7 @@ class Song:
 
 
 class NoElapsedError(Exception):
-    pass
+    """MPD has no playback position data."""
 
 
 class MPDEvents:
@@ -79,8 +79,8 @@ class MPDEvents:
             ):
                 try:
                     return float(status["elapsed"])
-                except:
-                    raise NoElapsedError()
+                except Exception as exc:
+                    raise NoElapsedError() from exc
 
         raise MPDError
 
@@ -92,8 +92,8 @@ class MPDEvents:
             if status.get("state") == "pause":
                 try:
                     return float(status["elapsed"])
-                except:
-                    raise NoElapsedError()
+                except Exception as exc:
+                    raise NoElapsedError() from exc
 
         raise MPDError
 
@@ -113,8 +113,8 @@ class MPDEvents:
             ):
                 try:
                     return float(status["elapsed"])
-                except:
-                    raise NoElapsedError()
+                except Exception as exc:
+                    raise NoElapsedError() from exc
 
         raise MPDError
 
@@ -402,13 +402,18 @@ class Tracker(MPDEvents):
             return "neither"
 
 
-class MPDTracker(BeetsPlugin):
+class MPDTracker(plugins.BeetsPlugin):
+    """The mpd_tracker plugin.
+
+    Start by calling `beet tracker`.
+    """
+
     item_types = {
         "play_count": types.INTEGER,
         "skip_count": types.INTEGER,
-        "last_played": DateType(),
+        "last_played": library.DateType(),
     }
-    album_types = {"last_played": DateType()}
+    album_types = {"last_played": library.DateType()}
 
     def __init__(self, name=None):
         super().__init__(name)
@@ -442,8 +447,8 @@ class MPDTracker(BeetsPlugin):
                 mpd_config["host"].get(), mpd_config["port"].get()
             )
             self._log.info("connected to MPD version {}", self.mpd_client.mpd_version)
-        except Exception as e:
-            raise Exception("Connection failed: {}", e)
+        except Exception as exc:
+            raise ui.UserError(f"Connection failed: {exc}") from exc
 
         while True:
             song = await Song.now_playing(self._log, self.mpd_client, lib)
@@ -502,10 +507,10 @@ class MPDTracker(BeetsPlugin):
         item.store()
 
     def commands(self):
-        def _func(lib, opts, args):
+        def _func(lib):
             asyncio.run(self.run(lib))
 
-        cmd = Subcommand(
+        cmd = ui.Subcommand(
             "tracker",
             help="Log play count, skip count, and last played from MPD",
         )
