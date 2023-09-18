@@ -1,6 +1,5 @@
 """A Beets plugin to track MPD playback status."""
 
-
 import asyncio
 import os
 import time
@@ -17,8 +16,125 @@ from mpd.asyncio import MPDClient
 from mpd_types import Track as MPDSong
 
 mpd_config = beets.config["mpd"]
-music_dir: str = beets.config["directory"].get(str)
-time_format: str = beets.config["time_format"].get(str)
+music_dir = beets.config["directory"].get(str)
+time_format = beets.config["time_format"].get(str)
+
+
+class MPDTracker(plugins.BeetsPlugin):
+    """The mpd_tracker plugin.
+
+    Start by calling `beet tracker`.
+    """
+
+    item_types = {
+        "play_count": types.INTEGER,
+        "skip_count": types.INTEGER,
+        "last_played": library.DateType(),
+    }
+    album_types = {"last_played": library.DateType()}
+
+    def __init__(self, name=None):
+        super().__init__(name)
+
+        self.config.add(
+            {
+                "play_time": 240,
+                "play_percent": 0.5,
+                "skip_time": 20,
+                "skip_percent": 0,
+            }
+        )
+
+        mpd_config.add(
+            {
+                "host": os.environ.get("MPD_HOST", "localhost"),
+                "port": int(os.environ.get("MPD_PORT", 6600)),
+                "password": "",
+            }
+        )
+        mpd_config["password"].redact = True
+
+        self.mpd_client = MPDClient()
+
+    async def run(self, lib):
+        """Main plugin function. Connect to MPD, then start tracking songs."""
+        self.mpd_client.disconnect()
+
+        try:
+            await self.mpd_client.connect(
+                mpd_config["host"].get(), mpd_config["port"].get()
+            )
+            self._log.info("connected to MPD version {}", self.mpd_client.mpd_version)
+        except Exception as exc:
+            raise ui.UserError(f"Connection failed: {exc}") from exc
+
+        while True:
+            song = await Song.now_playing(self._log, self.mpd_client, lib)
+            tracker = await Tracker.track(
+                self._log,
+                self.mpd_client,
+                song.mpd,
+                self.config["play_time"].get(int),
+                self.config["play_percent"].get(float),
+                self.config["skip_time"].get(int),
+                self.config["skip_time"].get(float),
+            )
+            playback_status = tracker.status()
+
+            if playback_status == "played":
+                self.set_played(song.beet)
+            elif playback_status == "skipped":
+                self.set_skipped(song.beet)
+
+    def set_played(self, item: BeetSong):
+        """Increment the `play_count` flexible attribute for the item, and set `last_played`
+
+        In addition, if all songs in the album have been played at some point,
+        set the album's `last_played` flexible attribute as the oldest `last_played`
+        attribuite of the songs in the album.
+        """
+        # set song metadata
+        item["play_count"] = item.get("play_count", 0) + 1
+        item["last_played"] = time.time()
+        item.store()
+        self._log.info(
+            "{} played {} times at {}",
+            item,
+            item["play_count"],
+            time.strftime(time_format, time.localtime(item["last_played"])),
+        )
+
+        # set album metadata
+        album = item.get_album()
+        if album:
+            songs_last_played_at = [song.get("last_played") for song in album.items()]
+
+            if all(songs_last_played_at):
+                album["last_played"] = min(songs_last_played_at)
+                album.store(inherit=False)
+                self._log.info(
+                    "{} last played at {}",
+                    album,
+                    time.strftime(time_format, time.localtime(album["last_played"])),
+                )
+
+    def set_skipped(self, item: BeetSong):
+        """Increment the `skip_count` flexible attribute for the item."""
+        item["skip_count"] = item.get("skip_count", 0) + 1
+        self._log.info("{} skipped", item)
+        item.store()
+
+    def commands(self):
+        def _func(lib):
+            asyncio.run(self.run(lib))
+
+        cmd = ui.Subcommand(
+            "tracker",
+            help="Log play count, skip count, and last played from MPD",
+        )
+        cmd.func = _func
+
+        return [cmd]
 
 
 class Song:
@@ -394,126 +510,8 @@ class Tracker(MPDEvents):
 
         if play_time == 0:
             return "neither"
-        elif self.play_threshold < play_time:
+        if self.play_threshold < play_time:
             return "played"
-        elif play_time < self.skip_threshold:
+        if play_time < self.skip_threshold:
             return "skipped"
-        else:
-            return "neither"
-
-
-class MPDTracker(plugins.BeetsPlugin):
-    """The mpd_tracker plugin.
-
-    Start by calling `beet tracker`.
-    """
-
-    item_types = {
-        "play_count": types.INTEGER,
-        "skip_count": types.INTEGER,
-        "last_played": library.DateType(),
-    }
-    album_types = {"last_played": library.DateType()}
-
-    def __init__(self, name=None):
-        super().__init__(name)
-
-        self.config.add(
-            {
-                "play_time": 240,
-                "play_percent": 0.5,
-                "skip_time": 20,
-                "skip_percent": 0,
-            }
-        )
-
-        mpd_config.add(
-            {
-                "host": os.environ.get("MPD_HOST", "localhost"),
-                "port": int(os.environ.get("MPD_PORT", 6600)),
-                "password": "",
-            }
-        )
-        mpd_config["password"].redact = True
-
-        self.mpd_client = MPDClient()
-
-    async def run(self, lib):
-        """Main plugin function. Connect to MPD, then start tracking songs."""
-        self.mpd_client.disconnect()
-
-        try:
-            await self.mpd_client.connect(
-                mpd_config["host"].get(), mpd_config["port"].get()
-            )
-            self._log.info("connected to MPD version {}", self.mpd_client.mpd_version)
-        except Exception as exc:
-            raise ui.UserError(f"Connection failed: {exc}") from exc
-
-        while True:
-            song = await Song.now_playing(self._log, self.mpd_client, lib)
-            tracker = await Tracker.track(
-                self._log,
-                self.mpd_client,
-                song.mpd,
-                self.config["play_time"].get(int),
-                self.config["play_percent"].get(float),
-                self.config["skip_time"].get(int),
-                self.config["skip_time"].get(float),
-            )
-            playback_status = tracker.status()
-
-            if playback_status == "played":
-                self.set_played(song.beet)
-            elif playback_status == "skipped":
-                self.set_skipped(song.beet)
-
-    def set_played(self, item: BeetSong):
-        """Increment the `play_count` flexible attribute for the item, and set `last_played`
-
-        In addition, if all songs in the album have been played at some point,
-        set the album's `last_played` flexible attribute as the oldest `last_played`
-        attribuite of the songs in the album.
-        """
-        # set song metadata
-        item["play_count"] = item.get("play_count", 0) + 1
-        item["last_played"] = time.time()
-        item.store()
-        self._log.info(
-            "{} played {} times at {}",
-            item,
-            item["play_count"],
-            time.strftime(time_format, time.localtime(item["last_played"])),
-        )
-
-        # set album metadata
-        album = item.get_album()
-        if album:
-            songs_last_played_at = [song.get("last_played") for song in album.items()]
-
-            if all(songs_last_played_at):
-                album["last_played"] = min(songs_last_played_at)
-                album.store(inherit=False)
-                self._log.info(
-                    "{} last played at {}",
-                    album,
-                    time.strftime(time_format, time.localtime(album["last_played"])),
-                )
-
-    def set_skipped(self, item: BeetSong):
-        """Increment the `skip_count` flexible attribute for the item."""
-        item["skip_count"] = item.get("skip_count", 0) + 1
-        self._log.info("{} skipped", item)
-        item.store()
-
-    def commands(self):
-        def _func(lib):
-            asyncio.run(self.run(lib))
-
-        cmd = ui.Subcommand(
-            "tracker",
-            help="Log play count, skip count, and last played from MPD",
-        )
-        cmd.func = _func
-
-        return [cmd]
+        return "neither"
