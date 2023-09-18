@@ -82,7 +82,6 @@ class MPDDjPlugin(plugins.BeetsPlugin):
             default=False,
             help="Auto-queue albums instead of songs",
         )
-
         cmd.func = _func
 
         return [cmd]
