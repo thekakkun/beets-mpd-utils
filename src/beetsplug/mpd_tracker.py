@@ -125,7 +125,7 @@ class MPDTracker(plugins.BeetsPlugin):
         item.store()
 
     def commands(self):
-        def _func(lib):
+        def _func(lib, _opts, _args):
             asyncio.run(self.run(lib))
 
         cmd = ui.Subcommand(
