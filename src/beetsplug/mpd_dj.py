@@ -33,6 +33,8 @@ class MPDDjPlugin(plugins.BeetsPlugin):
         mpd_config["password"].redact = True
 
     async def run(self, lib, opts, args):
+        """Main plugin function. Connect to MPD, upcoming items, and add accordingly."""
+
         mpd_queue = MPDQueue(lib, self._log)
         await mpd_queue.initialize()
 
@@ -87,6 +89,8 @@ class MPDDjPlugin(plugins.BeetsPlugin):
 
 
 class MPDQueue(MPDClient):
+    """Wrapper for the MPD client."""
+
     def __init__(self, lib: library.Library, log: Logger, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -104,6 +108,12 @@ class MPDQueue(MPDClient):
             raise ui.UserError(f"Connection failed: {exc}") from exc
 
     async def upcoming_items(self, album: bool):
+        """Return the list of upcoming items (songs or albums).
+
+        Currently returns a `set` of item ids, which might be an issue if the pool of
+        items to pull from is too small.
+        """
+
         # Turn off random mode, as we need to know what songs are upcoming
         self.random(0)
         status = await self.status()
@@ -127,8 +137,16 @@ class MPDQueue(MPDClient):
 
         return items
 
+    def command_list_end(self):
+        pass
+
+    def command_list_ok_begin(self):
+        pass
+
 
 class RandomSort(query.Sort):
+    """Subclass of Sort, to return random items from the query."""
+
     def __init__(self, count=None) -> None:
         super().__init__()
 
