@@ -19,9 +19,11 @@ Repository = "https://github.com/thekakkun/beets-mpd-utils.git"
 [tool.pylint.typecheck]
 generated-members = [
   "beetsplug.mpd_dj.MPDQueue.add",
+  "beetsplug.mpd_dj.MPDQueue.playlist",
   "beetsplug.mpd_dj.MPDQueue.random",
   "beetsplug.mpd_dj.MPDQueue.status",
-  "beetsplug.mpd_dj.MPDQueue.playlist",
+  "beetsplug.tracker.MPDTracker.currentsong",
+  "beetsplug.tracker.MPDTracker.status",
 ]
 
 [tool.setuptools.packages.find]

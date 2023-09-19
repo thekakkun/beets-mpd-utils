@@ -17,7 +17,7 @@ music_dir = beets.config["directory"].get(str)
 class MPDDjPlugin(plugins.BeetsPlugin):
     """The mpd_dj plugin.
 
-    Start by calling `beet dj`.
+    Start the plugin by calling `beet dj`.
     """
 
     def __init__(self, name=None):
