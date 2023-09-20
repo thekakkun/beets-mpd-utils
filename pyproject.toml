@@ -22,8 +22,8 @@ generated-members = [
   "beetsplug.mpd_dj.MPDQueue.playlist",
   "beetsplug.mpd_dj.MPDQueue.random",
   "beetsplug.mpd_dj.MPDQueue.status",
-  "beetsplug.tracker.MPDTracker.currentsong",
-  "beetsplug.tracker.MPDTracker.status",
+  "beetsplug.mpd_tracker.MPDTracker.currentsong",
+  "beetsplug.mpd_tracker.MPDTracker.status",
 ]
 
 [tool.setuptools.packages.find]
