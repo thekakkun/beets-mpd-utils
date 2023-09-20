@@ -1,8 +1,10 @@
 """A Beets plugin to track MPD playback status."""
 
 import asyncio
+import logging
 import os
 import time
+import typing
 
 import beets
 from beets import library, plugins, ui
@@ -61,7 +63,7 @@ class MPDTrackerPlugin(plugins.BeetsPlugin):
 
         return [cmd]
 
-    async def run(self, lib):
+    async def run(self, lib: library.Library):
         """Main plugin function. Connect to MPD, then start tracking songs."""
 
         mpd_tracker = await MPDTracker.initialize(self.config, self._log)
@@ -74,7 +76,7 @@ class MPDTrackerPlugin(plugins.BeetsPlugin):
             elif playback_status == "skipped":
                 self.set_skipped(lib, song)
 
-    def set_played(self, lib: library.Library, song):
+    def set_played(self, lib: library.Library, song: dict):
         """Increment the `play_count` flexible attribute for the item, and set `last_played`
 
         In addition, if all songs in the album have been played at some point,
@@ -110,7 +112,7 @@ class MPDTrackerPlugin(plugins.BeetsPlugin):
                     time.strftime(time_format, time.localtime(album["last_played"])),
                 )
 
-    def set_skipped(self, lib: library.Library, song):
+    def set_skipped(self, lib: library.Library, song: dict):
         """Increment the `skip_count` flexible attribute for the item."""
 
         query = library.PathQuery("path", os.path.join(music_dir, song["file"]))
@@ -124,7 +126,7 @@ class MPDTrackerPlugin(plugins.BeetsPlugin):
 class PlaybackHistory:
     """Store playback history as a list of play/pause positions."""
 
-    def __init__(self, log, duration: float) -> None:
+    def __init__(self, log: logging.Logger, duration: float) -> None:
         self.log = log
 
         self.duration = duration
@@ -202,17 +204,21 @@ class MPDTracker(MPDClient):
     - Skip: less than 0% of track played or 20 seconds
     """
 
-    def __init__(self, config, log, *args, **kwargs):
+    song: dict
+    playback_history: PlaybackHistory
+
+    def __init__(
+        self, config: beets.IncludeLazyConfig, log: logging.Logger, *args, **kwargs
+    ):
         super().__init__(*args, **kwargs)
 
         self.log = log
         self.config = config
 
-        self.song = None
-        self.playback_history = None
-
     @classmethod
-    async def initialize(cls, config, log):
+    async def initialize(
+        cls, config: beets.IncludeLazyConfig, log: logging.Logger
+    ) -> typing.Self:
         """Main initializer for the tracker."""
 
         self = MPDTracker(config, log)
@@ -226,7 +232,7 @@ class MPDTracker(MPDClient):
 
         return self
 
-    async def run(self):
+    async def run(self) -> tuple[dict, typing.Literal["played", "skipped", "neither"]]:
         """Main initializer for the tracker.
 
         Connects to MPD, tracks the currently playing song,
@@ -262,13 +268,13 @@ class MPDTracker(MPDClient):
             state = status.get("state")
 
             status = await self.status()
-            queued_song = await self.currentsong()
+            song = await self.currentsong()
 
             if state == "play":
-                song_done = self.handle_play_state(status, queued_song)
+                song_done = self.handle_play_state(status, song)
 
             elif state == "pause":
-                song_done = self.handle_pause_state(status, queued_song)
+                song_done = self.handle_pause_state(status, song)
 
             elif state == "stop":
                 self.playback_history.clear()
@@ -277,7 +283,7 @@ class MPDTracker(MPDClient):
             if song_done:
                 break
 
-    def handle_play_state(self, status, queued_song):
+    def handle_play_state(self, status: dict, song: dict) -> bool:
         """Handle events that may occor when state=='play'."""
 
         song_done = False
@@ -288,18 +294,18 @@ class MPDTracker(MPDClient):
             except Exception as exc:
                 raise NoElapsedError() from exc
 
-        elif self.is_seek(status, queued_song):
+        elif self.is_seek(status, song):
             self.playback_history.play_to_now()
             try:
                 self.playback_history.play_from(float(status["elapsed"]))
             except Exception as exc:
                 raise NoElapsedError() from exc
 
-        elif self.is_replay(status, queued_song):
+        elif self.is_replay(status, song):
             self.playback_history.play_to_end()
             song_done = True
 
-        elif self.is_new_song(status, queued_song):
+        elif self.is_new_song(status, song):
             self.playback_history.play_to_now()
             song_done = True
 
@@ -313,18 +319,18 @@ class MPDTracker(MPDClient):
 
         return song_done
 
-    def handle_pause_state(self, status, queued_song):
+    def handle_pause_state(self, status: dict, song: dict) -> bool:
         """Handle events that may occor when state=='pause'."""
 
         song_done = False
 
-        if self.is_play(status, queued_song):
+        if self.is_play(status, song):
             try:
                 self.playback_history.play_from(float(status["elapsed"]))
             except Exception as exc:
                 raise NoElapsedError() from exc
 
-        elif self.is_new_song(status, queued_song):
+        elif self.is_new_song(status, song):
             self.playback_history.play_to_now()
             song_done = True
 
@@ -334,17 +340,17 @@ class MPDTracker(MPDClient):
 
         return song_done
 
-    def is_play(self, status, queued_song):
+    def is_play(self, status: dict, song: dict) -> bool:
         """Start playback."""
 
-        return status.get("state") == "play" and self.song == queued_song
+        return status.get("state") == "play" and self.song == song
 
-    def is_pause(self, status):
+    def is_pause(self, status: dict):
         """Playback paused."""
 
         return status.get("state") == "pause"
 
-    def is_seek(self, status, queued_song):
+    def is_seek(self, status: dict, song: dict) -> bool:
         """Player seeked.
 
         This requires the time we expect the song to naturally end, so that it can be
@@ -353,11 +359,11 @@ class MPDTracker(MPDClient):
 
         return (
             status.get("state") == "play"
-            and self.song == queued_song
+            and self.song == song
             and 1 < abs(time.time() - self.playback_history.expected_end)
         )
 
-    def is_replay(self, status, queued_song):
+    def is_replay(self, status: dict, song: dict) -> bool:
         """Song replayed.
 
         This requires the time we expect the song to naturally end, so that it can be
@@ -366,16 +372,16 @@ class MPDTracker(MPDClient):
 
         return (
             status.get("state") == "play"
-            and self.song == queued_song
+            and self.song == song
             and abs(time.time() - self.playback_history.expected_end) < 1
         )
 
-    def is_new_song(self, status, queued_song):
+    def is_new_song(self, status: dict, song: dict) -> bool:
         """New song queued in player."""
 
-        return status.get("state") == "play" and self.song != queued_song
+        return status.get("state") == "play" and self.song != song
 
-    def is_stop(self, status):
+    def is_stop(self, status: dict) -> bool:
         """Player stopped.
 
         This requires the time we expect the song to naturally end, so that it can be
@@ -386,7 +392,7 @@ class MPDTracker(MPDClient):
             time.time() - self.playback_history.expected_end
         )
 
-    def is_playlist_end(self, status):
+    def is_playlist_end(self, status: dict) -> bool:
         """Reached end of playlist.
 
         This requires the time we expect the song to naturally end, so that it can be
@@ -398,7 +404,7 @@ class MPDTracker(MPDClient):
             and abs(time.time() - self.playback_history.expected_end) < 1
         )
 
-    def playback_status(self):
+    def playback_status(self) -> typing.Literal["played", "skipped", "neither"]:
         """Calculate the play and skip threshold times, return playback state for song."""
 
         play_time = self.playback_history.play_time()

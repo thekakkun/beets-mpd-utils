@@ -2,8 +2,9 @@
 
 import asyncio
 import itertools
+import logging
+import optparse
 import os
-from logging import Logger
 
 import beets
 from beets import library, plugins, ui
@@ -46,19 +47,12 @@ class MPDDjPlugin(plugins.BeetsPlugin):
             default=20,
             help="number of items to maintain in the queue",
         )
-        cmd.parser.add_option(
-            "-a",
-            "--album",
-            action="store_true",
-            dest="album",
-            default=False,
-            help="Auto-queue albums instead of songs",
-        )
+        cmd.parser.add_album_option()
         cmd.func = _func
 
         return [cmd]
 
-    async def run(self, lib, opts, args):
+    async def run(self, lib: library.Library, opts: optparse.Values, args: list[str]):
         """Main plugin function. Connect to MPD, upcoming items, and add accordingly."""
 
         mpd_queue = await MPDQueue.initialize(lib, self._log)
@@ -76,7 +70,9 @@ class MPDDjPlugin(plugins.BeetsPlugin):
             for uri in to_queue:
                 mpd_queue.add(uri)
 
-    def count_items(self, lib, opts, item_paths):
+    def count_items(
+        self, lib: library.Library, opts: optparse.Values, item_paths: list[str]
+    ) -> set[int]:
         """From a list of paths to items, return a set of the unique items in the list."""
 
         items = set()
@@ -92,7 +88,9 @@ class MPDDjPlugin(plugins.BeetsPlugin):
 
         return items
 
-    def get_items(self, lib, opts, args, num):
+    def get_items(
+        self, lib: library.Library, opts: optparse.Values, args: list[str], num: int
+    ) -> list[str]:
         """Get the specified number of items from the library, as paths."""
 
         if opts.album:
@@ -111,14 +109,14 @@ class MPDDjPlugin(plugins.BeetsPlugin):
 class MPDQueue(MPDClient):
     """Wrapper for the MPD client."""
 
-    def __init__(self, lib: library.Library, log: Logger, *args, **kwargs):
+    def __init__(self, lib: library.Library, log: logging.Logger, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.lib = lib
         self.log = log
 
     @classmethod
-    async def initialize(cls, lib: library.Library, log: Logger):
+    async def initialize(cls, lib: library.Library, log: logging.Logger):
         """Main initializer for the queue."""
 
         self = MPDQueue(lib, log)
@@ -132,7 +130,7 @@ class MPDQueue(MPDClient):
 
         return self
 
-    async def upcoming_items(self):
+    async def upcoming_items(self) -> list[str]:
         """Return a list of paths to the items upcoming in the queue."""
         async for _ in self.idle(["playlist", "player"]):
             # Turn off random mode, as we need to know what songs are upcoming
