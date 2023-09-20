@@ -1,6 +1,9 @@
 # beets-mpd-utils
 
-[beets](https://beets.io/) plugins for managing music metadata and playback using [Music Player Daemon](https://www.musicpd.org/).
+Some [beets](https://beets.io/) plugins to interface with [Music Player Daemon](https://www.musicpd.org/).
+
+- [MPD Tracker](#mpd-tracker): Track song plays/skips on MPD.
+- [MPD DJ](#mpd-dj): Auto-add songs/albums to your MPD queue.
 
 ## Installation
 
@@ -68,5 +71,6 @@ By default, the plugin will work to maintain 20 upcoming songs, selected randoml
 In addition, you can enter a [query](https://beets.readthedocs.io/en/stable/reference/query.html) to specify what will be added to the queue.
 
 ```bash
-beet dj year:2022
+# maintain 5 albums in the queue, pulling randomly from albums released in 2022
+beet dj -n 5 --album year:2022
 ```

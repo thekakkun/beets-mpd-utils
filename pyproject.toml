@@ -1,11 +1,16 @@
 [project]
 name = "beets-mpd-utils"
-version = "0.0.1"
+version = "0.1.0"
 description = "Beets plugins to interface with MPD"
 readme = "README.md"
 requires-python = ">=3.7"
+classifiers = [
+  "Programming Language :: Python :: 3.0",
+  "Topic :: Multimedia :: Sound/Audio :: Players",
+  "Topic :: Utilities"
+]
 license = {file = "LICENSE"}
-keywords = ["beets", "MPD", "music"]
+keywords = ["beets", "MPD", "music player daemon", "music"]
 
 dependencies = [
   "beets",
