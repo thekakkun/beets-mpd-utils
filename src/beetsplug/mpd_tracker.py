@@ -49,6 +49,18 @@ class MPDTrackerPlugin(plugins.BeetsPlugin):
         )
         mpd_config["password"].redact = True
 
+    def commands(self):
+        def _func(lib, _opts, _args):
+            asyncio.run(self.run(lib))
+
+        cmd = ui.Subcommand(
+            "tracker",
+            help="Log play count, skip count, and last played from MPD",
+        )
+        cmd.func = _func
+
+        return [cmd]
+
     async def run(self, lib):
         """Main plugin function. Connect to MPD, then start tracking songs."""
 
@@ -107,18 +119,6 @@ class MPDTrackerPlugin(plugins.BeetsPlugin):
         item["skip_count"] = item.get("skip_count", 0) + 1
         self._log.info("{} skipped", item)
         item.store()
-
-    def commands(self):
-        def _func(lib, _opts, _args):
-            asyncio.run(self.run(lib))
-
-        cmd = ui.Subcommand(
-            "tracker",
-            help="Log play count, skip count, and last played from MPD",
-        )
-        cmd.func = _func
-
-        return [cmd]
 
 
 class PlaybackHistory:

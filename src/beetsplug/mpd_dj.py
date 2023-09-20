@@ -32,34 +32,6 @@ class MPDDjPlugin(plugins.BeetsPlugin):
         )
         mpd_config["password"].redact = True
 
-    async def run(self, lib, opts, args):
-        """Main plugin function. Connect to MPD, upcoming items, and add accordingly."""
-
-        mpd_queue = MPDQueue(lib, self._log)
-        await mpd_queue.initialize()
-
-        async for _ in mpd_queue.idle(["playlist", "player"]):
-            items = await mpd_queue.upcoming_items(opts.album)
-            deficit = opts.items - len(items)
-
-            if deficit <= 0:
-                continue
-
-            if opts.album:
-                items = lib.albums(ui.decargs(args), sort=RandomSort(deficit))
-                item_paths = [item.item_dir().decode("utf-8") for item in items]
-            else:
-                items = lib.items(ui.decargs(args), sort=RandomSort(deficit))
-                item_paths = [item.destination().decode("utf-8") for item in items]
-
-            item_uris = [
-                os.path.relpath(path, start=os.path.expanduser(music_dir))
-                for path in item_paths
-            ]
-
-            for uri in item_uris:
-                mpd_queue.add(uri)
-
     def commands(self):
         def _func(lib, opts, args):
             asyncio.run(self.run(lib, opts, args))
@@ -86,6 +58,55 @@ class MPDDjPlugin(plugins.BeetsPlugin):
 
         return [cmd]
 
+    async def run(self, lib, opts, args):
+        """Main plugin function. Connect to MPD, upcoming items, and add accordingly."""
+
+        mpd_queue = await MPDQueue.initialize(lib, self._log)
+
+        while True:
+            item_paths = await mpd_queue.upcoming_items()
+            upcoming_items = self.count_items(lib, opts, item_paths)
+
+            deficit = opts.items - len(upcoming_items)
+
+            if deficit <= 0:
+                continue
+
+            to_queue = self.get_items(lib, opts, args, deficit)
+            for uri in to_queue:
+                mpd_queue.add(uri)
+
+    def count_items(self, lib, opts, item_paths):
+        """From a list of paths to items, return a set of the unique items in the list."""
+
+        items = set()
+
+        for path in item_paths:
+            path_query = library.PathQuery("path", path)
+            item = lib.items(path_query).get()
+
+            if opts.album:
+                items.add(item.get_album().id)
+            else:
+                items.add(item.id)
+
+        return items
+
+    def get_items(self, lib, opts, args, num):
+        """Get the specified number of items from the library, as paths."""
+
+        if opts.album:
+            items = lib.albums(ui.decargs(args), sort=RandomSort(num))
+            item_paths = [item.item_dir().decode("utf-8") for item in items]
+        else:
+            items = lib.items(ui.decargs(args), sort=RandomSort(num))
+            item_paths = [item.destination().decode("utf-8") for item in items]
+
+        return [
+            os.path.relpath(path, start=os.path.expanduser(music_dir))
+            for path in item_paths
+        ]
+
 
 class MPDQueue(MPDClient):
     """Wrapper for the MPD client."""
@@ -96,8 +117,11 @@ class MPDQueue(MPDClient):
         self.lib = lib
         self.log = log
 
-    async def initialize(self):
-        """Connect to MPD"""
+    @classmethod
+    async def initialize(cls, lib: library.Library, log: Logger):
+        """Main initializer for the queue."""
+
+        self = MPDQueue(lib, log)
 
         self.disconnect()
 
@@ -106,35 +130,25 @@ class MPDQueue(MPDClient):
         except Exception as exc:
             raise ui.UserError(f"Connection failed: {exc}") from exc
 
-    async def upcoming_items(self, album: bool):
-        """Return the list of upcoming items (songs or albums).
+        return self
 
-        Currently returns a `set` of item ids, which might be an issue if the pool of
-        items to pull from is too small.
-        """
+    async def upcoming_items(self):
+        """Return a list of paths to the items upcoming in the queue."""
+        async for _ in self.idle(["playlist", "player"]):
+            # Turn off random mode, as we need to know what songs are upcoming
+            self.random(0)
+            status = await self.status()
 
-        # Turn off random mode, as we need to know what songs are upcoming
-        self.random(0)
-        status = await self.status()
-        items = set()
+            upcoming_items = itertools.islice(
+                await self.playlist(),
+                int(status.get("song", 0)),
+                int(status["playlistlength"]),
+            )
 
-        upcoming_items = itertools.islice(
-            await self.playlist(),
-            int(status.get("song", 0)) + 1,
-            int(status["playlistlength"]),
-        )
-
-        for song_path in upcoming_items:
-            abs_path = os.path.join(music_dir, song_path.replace("file: ", ""))
-            path_query = library.PathQuery("path", abs_path)
-            song = self.lib.items(path_query).get()
-
-            if album:
-                items.add(song.get_album().id)
-            else:
-                items.add(song.id)
-
-        return items
+            return [
+                os.path.join(music_dir, item.replace("file: ", ""))
+                for item in upcoming_items
+            ]
 
     def command_list_end(self):
         pass
