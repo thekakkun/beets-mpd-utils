@@ -10,7 +10,7 @@ Some [beets](https://beets.io/) plugins to interface with [Music Player Daemon](
 Install the plugin
 
 ```bash
-pip install git+https://github.com/thekakkun/beets-mpd-utils.git
+pip install beets-mpd-utils
 ```
 
 Enable the plugin by adding it the `plugins` option in your beets config.
