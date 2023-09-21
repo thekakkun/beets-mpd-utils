@@ -137,6 +137,10 @@ class MPDQueue(MPDClient):
             self.random(0)
             status = await self.status()
 
+            # Don't do anything if playlist is empty (allows user to completely clear queue).
+            if int(status["playlistlength"]) == 0:
+                continue
+
             upcoming_items = itertools.islice(
                 await self.playlist(),
                 int(status.get("song", 0)),
