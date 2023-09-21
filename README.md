@@ -7,10 +7,12 @@ Some [beets](https://beets.io/) plugins to interface with [Music Player Daemon](
 
 ## Installation
 
-Install the plugin
+Install the plugin.
+
+**Note**: `mpd_tracker` requires a newer version of beets than is available on PyPI. Therefore, make sure it is installed from git.
 
 ```bash
-pip install beets-mpd-utils
+pip install git+https://github.com/beetbox/beets.git beets-mpd-utils
 ```
 
 Enable the plugin by adding it the `plugins` option in your beets config.
@@ -26,9 +28,9 @@ plugins: mpd_tracker, mpd_dj
 The `mpd_tracker` plugin tracks song plays and skips on MPD and records them in the following flexible attributes:
 
 - Song
-  - `play_count`: The number of times the song has been played. Defined as playing more than 50% or 240 seconds of the song, by default.
+  - `play_count`: The number of times the song has been played.
   - `last_played`: When the `play_count` was last updated.
-  - `skip_count`: The number of times the song has beed skipped. Defined as changing the song before 20 seconds of the song has been played, by default.
+  - `skip_count`: The number of times the song has beed skipped.
 - Album
   - `last_played`: Only written once every song in the album has been played. Defined as the oldest `last_played` value for the songs in the album.
 
@@ -42,7 +44,7 @@ beet tracker
 
 #### Configuration
 
-To configure, make a `mpd_tracker` section in your beets config file. Songs will be considered played/skipped if either of the thresholds are met.
+To configure, make a `mpd_tracker` section in your beets config file. Songs will be considered played/skipped if either of the time/percentage thresholds are met.
 
 The available options are:
 
@@ -53,7 +55,7 @@ The available options are:
 
 ### MPD DJ
 
-The `mpd_dj` plugin randomly adds items to the MPD queue. Note that activating this plugin will turn random off in MPD, as it needs to know what songs are upcoming in the queue.
+The `mpd_dj` plugin randomly adds items to the MPD queue. Note that activating this plugin will turn off random mode in MPD, as it needs to know what songs are upcoming in the queue.
 
 #### Usage
 

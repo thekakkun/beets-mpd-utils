@@ -13,8 +13,8 @@ license = {file = "LICENSE"}
 keywords = ["beets", "MPD", "music player daemon", "music"]
 
 dependencies = [
-  "beets @ git+https://github.com/beetbox/beets.git",
-  "python-mpd2",
+  "beets >= 1.6.1",
+  "python-mpd2 >= 3.0.0",
 ]
 
 [project.urls]
