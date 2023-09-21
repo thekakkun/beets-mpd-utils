@@ -3,7 +3,7 @@
 import asyncio
 import itertools
 import logging
-import optparse
+import optparse  # pylint: disable=deprecated-module
 import os
 
 import beets
