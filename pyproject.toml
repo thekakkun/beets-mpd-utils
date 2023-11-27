@@ -1,6 +1,6 @@
 [project]
 name = "beets-mpd-utils"
-version = "0.1.1"
+version = "0.1.3"
 description = "Beets plugins to interface with MPD"
 readme = "README.md"
 requires-python = ">=3.7"
