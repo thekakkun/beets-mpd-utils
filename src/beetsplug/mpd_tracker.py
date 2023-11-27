@@ -284,11 +284,11 @@ class MPDTracker(MPDClient):
                 break
 
     def handle_play_state(self, status: dict, song: dict) -> bool:
-        """Handle events that may occor when state=='play'."""
+        """Handle events that may occur when state=='play'."""
 
         song_done = False
 
-        if self.is_pause(status):
+        if self.is_pause(status, song):
             try:
                 self.playback_history.play_to(float(status["elapsed"]))
             except Exception as exc:
@@ -345,10 +345,10 @@ class MPDTracker(MPDClient):
 
         return status.get("state") == "play" and self.song == song
 
-    def is_pause(self, status: dict):
+    def is_pause(self, status: dict, song: dict):
         """Playback paused."""
 
-        return status.get("state") == "pause"
+        return status.get("state") == "pause" and self.song == song
 
     def is_seek(self, status: dict, song: dict) -> bool:
         """Player seeked.
@@ -379,7 +379,9 @@ class MPDTracker(MPDClient):
     def is_new_song(self, status: dict, song: dict) -> bool:
         """New song queued in player."""
 
-        return status.get("state") == "play" and self.song != song
+        return (
+            status.get("state") == "play" or status.get("state") == "pause"
+        ) and self.song != song
 
     def is_stop(self, status: dict) -> bool:
         """Player stopped.
