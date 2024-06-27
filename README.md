@@ -9,10 +9,8 @@ Some [beets](https://beets.io/) plugins to interface with [Music Player Daemon](
 
 Install the plugin.
 
-**Note**: `mpd_tracker` requires a newer version of beets than is available on PyPI. Therefore, make sure it is installed from git.
-
 ```bash
-pip install git+https://github.com/beetbox/beets.git beets-mpd-utils
+pip install beets-mpd-utils
 ```
 
 Enable the plugin by adding it the `plugins` option in your beets config.
