@@ -82,7 +82,9 @@ class MPDDjPlugin(plugins.BeetsPlugin):
             item = lib.items(path_query).get()
 
             if opts.album:
-                items.add(item.get_album().id)
+                # If no album_id (probably a singleton), use id=0 to avoid crashes.
+                # Might be screwy if user has many singletons.
+                items.add(item.get_album().get("id", 0))
             else:
                 items.add(item.id)
 
