@@ -82,8 +82,6 @@ class MPDDjPlugin(plugins.BeetsPlugin):
             item = lib.items(path_query).get()
 
             if opts.album:
-                # If no album_id (probably a singleton), use id=0 to avoid crashes.
-                # Might be screwy if user has many singletons.
                 items.add(item.get_album().get("id", 0))
             else:
                 items.add(item.id)
@@ -127,6 +125,7 @@ class MPDQueue(MPDClient):
 
         try:
             await self.connect(mpd_config["host"].get(), mpd_config["port"].get())
+            self.password(mpd_config['password'].get())
         except Exception as exc:
             raise ui.UserError(f"Connection failed: {exc}") from exc
 

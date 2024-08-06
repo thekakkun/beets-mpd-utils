@@ -227,6 +227,7 @@ class MPDTracker(MPDClient):
 
         try:
             await self.connect(mpd_config["host"].get(), mpd_config["port"].get())
+            self.password(mpd_config['password'].get())
         except Exception as exc:
             raise ui.UserError(f"Connection failed: {exc}") from exc
 
