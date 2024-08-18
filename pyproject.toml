@@ -1,35 +1,31 @@
-[project]
+[tool.poetry]
 name = "beets-mpd-utils"
 version = "0.1.4"
-description = "Beets plugins to interface with MPD"
+description = "Utilities for MPD integration with Beets"
+authors = []
+license = "MIT"
 readme = "README.md"
-requires-python = ">=3.7"
+keywords = ["beets", "MPD", "music player daemon", "music"]
+
 classifiers = [
   "Programming Language :: Python :: 3.0",
   "Topic :: Multimedia :: Sound/Audio :: Players",
-  "Topic :: Utilities"
+  "Topic :: Utilities",
 ]
-license = {file = "LICENSE"}
-keywords = ["beets", "MPD", "music player daemon", "music"]
+packages = [{ include = "beetsplug", from = "src" }]
 
-dependencies = [
-  "beets >= 1.6.1",
-  "python-mpd2 >= 3.0.0",
-]
+[tool.poetry.urls]
+homepage = "https://github.com/thekakkun/beets-mpd-utils"
+repository = "https://github.com/thekakkun/beets-mpd-utils.git"
 
-[project.urls]
-Homepage = "https://github.com/thekakkun/beets-mpd-utils"
-Repository = "https://github.com/thekakkun/beets-mpd-utils.git"
+[tool.poetry.dependencies]
+python = "^3.12"
+beets = "^2.0.0"
+python-mpd2 = "^3.1.1"
 
-[tool.pylint.typecheck]
-generated-members = [
-  "beetsplug.mpd_dj.MPDQueue.add",
-  "beetsplug.mpd_dj.MPDQueue.playlist",
-  "beetsplug.mpd_dj.MPDQueue.random",
-  "beetsplug.mpd_dj.MPDQueue.status",
-  "beetsplug.mpd_tracker.MPDTracker.currentsong",
-  "beetsplug.mpd_tracker.MPDTracker.status",
-]
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.6.1"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

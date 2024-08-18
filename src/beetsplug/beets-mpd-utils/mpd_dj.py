@@ -3,7 +3,7 @@
 import asyncio
 import itertools
 import logging
-import optparse  # pylint: disable=deprecated-module
+import optparse
 import os
 
 import beets
@@ -125,7 +125,7 @@ class MPDQueue(MPDClient):
 
         try:
             await self.connect(mpd_config["host"].get(), mpd_config["port"].get())
-            self.password(mpd_config['password'].get())
+            self.password(mpd_config["password"].get())
         except Exception as exc:
             raise ui.UserError(f"Connection failed: {exc}") from exc
 
