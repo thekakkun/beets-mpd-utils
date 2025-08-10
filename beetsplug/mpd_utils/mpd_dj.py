@@ -11,6 +11,8 @@ from beets import library, plugins, ui
 from beets.dbcore import query
 from mpd.asyncio import MPDClient
 
+from .utils import debounce
+
 mpd_config = beets.config["mpd"]
 music_dir = beets.config["directory"].get(str)
 
@@ -52,8 +54,15 @@ class MPDDjPlugin(plugins.BeetsPlugin):
 
         return [cmd]
 
-    async def run(self, lib: library.Library, opts: optparse.Values, args: list[str]):
-        """Main plugin function. Connect to MPD, upcoming items, and add accordingly."""
+    async def run(
+        self,
+        lib: library.Library,
+        opts: optparse.Values,
+        args: list[str],
+    ):
+        """Main plugin function.
+        Connect to MPD, upcoming items, and add accordingly.
+        """
 
         mpd_queue = await MPDQueue.initialize(lib, self._log)
 
@@ -71,9 +80,14 @@ class MPDDjPlugin(plugins.BeetsPlugin):
                 mpd_queue.add(uri)
 
     def count_items(
-        self, lib: library.Library, opts: optparse.Values, item_paths: list[str]
+        self,
+        lib: library.Library,
+        opts: optparse.Values,
+        item_paths: list[str],
     ) -> set[int]:
-        """From a list of paths to items, return a set of the unique items in the list."""
+        """From a list of paths to items, return a set of the unique
+        items in the list.
+        """
 
         items = set()
 
@@ -89,7 +103,11 @@ class MPDDjPlugin(plugins.BeetsPlugin):
         return items
 
     def get_items(
-        self, lib: library.Library, opts: optparse.Values, args: list[str], num: int
+        self,
+        lib: library.Library,
+        opts: optparse.Values,
+        args: list[str],
+        num: int,
     ) -> list[str]:
         """Get the specified number of items from the library, as paths."""
 
@@ -109,7 +127,13 @@ class MPDDjPlugin(plugins.BeetsPlugin):
 class MPDQueue(MPDClient):
     """Wrapper for the MPD client."""
 
-    def __init__(self, lib: library.Library, log: logging.Logger, *args, **kwargs):
+    def __init__(
+        self,
+        lib: library.Library,
+        log: logging.Logger,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
 
         self.lib = lib
@@ -124,7 +148,10 @@ class MPDQueue(MPDClient):
         self.disconnect()
 
         try:
-            await self.connect(mpd_config["host"].get(), mpd_config["port"].get())
+            await self.connect(
+                mpd_config["host"].get(),
+                mpd_config["port"].get(),
+            )
             self.password(mpd_config["password"].get())
         except Exception as exc:
             raise ui.UserError(f"Connection failed: {exc}") from exc
@@ -133,12 +160,13 @@ class MPDQueue(MPDClient):
 
     async def upcoming_items(self) -> list[str]:
         """Return a list of paths to the items upcoming in the queue."""
-        async for _ in self.idle(["playlist", "player"]):
+        async for _ in debounce(self.idle(["playlist", "player"]), 0.5):
             # Turn off random mode, as we need to know what songs are upcoming
             self.random(0)
             status = await self.status()
 
-            # Don't do anything if playlist is empty (allows user to completely clear queue).
+            # Don't do anything if playlist is empty
+            # (allows user to completely clear queue).
             if int(status["playlistlength"]) == 0:
                 continue
 
