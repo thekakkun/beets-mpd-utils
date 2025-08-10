@@ -1,31 +1,15 @@
-[tool.poetry]
+[project]
 name = "beets-mpd-utils"
 version = "0.1.4"
 description = "Utilities for MPD integration with Beets"
-authors = []
-license = "MIT"
 readme = "README.md"
-keywords = ["beets", "MPD", "music player daemon", "music"]
+requires-python = ">=3.12"
+dependencies = ["beets>=2.3.1", "python-mpd2>=3.1.1"]
 
-classifiers = [
-  "Programming Language :: Python :: 3.0",
-  "Topic :: Multimedia :: Sound/Audio :: Players",
-  "Topic :: Utilities",
-]
-packages = [{ include = "beetsplug", from = "src" }]
+[dependency-groups]
+dev = ["ruff>=0.12.8"]
 
-[tool.poetry.urls]
+[project.urls]
 homepage = "https://github.com/thekakkun/beets-mpd-utils"
 repository = "https://github.com/thekakkun/beets-mpd-utils.git"
 
-[tool.poetry.dependencies]
-python = "^3.12"
-beets = "^2.0.0"
-python-mpd2 = "^3.1.1"
-
-[tool.poetry.group.dev.dependencies]
-ruff = "^0.6.1"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
