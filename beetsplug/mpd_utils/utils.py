@@ -10,7 +10,7 @@ async def debounce[T](
     yielded_last = True
 
     async def timer(value: T) -> T:
-        asyncio.sleep(delay)
+        await asyncio.sleep(delay)
         return value
 
     async for item in source:
