@@ -84,7 +84,10 @@ class MPDTrackerPlugin(plugins.BeetsPlugin):
         attribuite of the songs in the album.
         """
 
-        query = library.PathQuery("path", os.path.join(music_dir, song["file"]))
+        query = library.PathQuery(
+            "path",
+            os.path.join(music_dir, song["file"]),
+        )
         item = lib.items(query).get()
 
         # set song metadata
@@ -109,13 +112,19 @@ class MPDTrackerPlugin(plugins.BeetsPlugin):
                 self._log.info(
                     "{} last played at {}",
                     album,
-                    time.strftime(time_format, time.localtime(album["last_played"])),
+                    time.strftime(
+                        time_format,
+                        time.localtime(album["last_played"]),
+                    ),
                 )
 
     def set_skipped(self, lib: library.Library, song: dict):
         """Increment the `skip_count` flexible attribute for the item."""
 
-        query = library.PathQuery("path", os.path.join(music_dir, song["file"]))
+        query = library.PathQuery(
+            "path",
+            os.path.join(music_dir, song["file"]),
+        )
         item = lib.items(query).get()
 
         item["skip_count"] = item.get("skip_count", 0) + 1
@@ -208,7 +217,11 @@ class MPDTracker(MPDClient):
     playback_history: PlaybackHistory
 
     def __init__(
-        self, config: beets.IncludeLazyConfig, log: logging.Logger, *args, **kwargs
+        self,
+        config: beets.IncludeLazyConfig,
+        log: logging.Logger,
+        *args,
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
 
@@ -226,14 +239,22 @@ class MPDTracker(MPDClient):
         self.disconnect()
 
         try:
-            await self.connect(mpd_config["host"].get(), mpd_config["port"].get())
-            self.password(mpd_config['password'].get())
+            await self.connect(
+                mpd_config["host"].get(),
+                mpd_config["port"].get(),
+            )
+            self.password(mpd_config["password"].get())
         except Exception as exc:
             raise ui.UserError(f"Connection failed: {exc}") from exc
 
         return self
 
-    async def run(self) -> tuple[dict, typing.Literal["played", "skipped", "neither"]]:
+    async def run(
+        self,
+    ) -> tuple[
+        dict,
+        typing.Literal["played", "skipped", "neither"],
+    ]:
         """Main initializer for the tracker.
 
         Connects to MPD, tracks the currently playing song,
@@ -247,9 +268,14 @@ class MPDTracker(MPDClient):
                 break
 
         self.song = await self.currentsong()
-        self.playback_history = PlaybackHistory(self.log, float(self.song["duration"]))
+        self.playback_history = PlaybackHistory(
+            self.log,
+            float(self.song["duration"]),
+        )
 
-        self.log.debug(f"Start tracking: {self.song['artist']} - {self.song['title']}")
+        self.log.debug(
+            (f"Start tracking: {self.song['artist']} - {self.song['title']}")
+        )
 
         # Start tracking
         task = asyncio.create_task(self._task())
