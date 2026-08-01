@@ -1,41 +1,52 @@
-from typing import AsyncIterable, AsyncIterator
 import asyncio
+from typing import Any, AsyncIterable, AsyncIterator
 
 
-async def debounce[T](
-    source: AsyncIterable[T],
-    delay: float,
-) -> AsyncIterator[T]:
-    task: asyncio.Task | None = None
-    yielded_last = True
+async def debounce[T](source: AsyncIterable[T], delay: int | float) -> AsyncIterator[T]:
+    it = source.__aiter__()
+    next_task: asyncio.Task[T] = asyncio.ensure_future(it.__anext__())
+    timer_task: asyncio.Task[None] | None = None
+    latest: T
+    has_latest = False
 
-    async def timer(value: T) -> T:
-        await asyncio.sleep(delay)
-        return value
+    try:
+        while True:
+            waiting: set[asyncio.Task[Any]] = {next_task}
+            if timer_task is not None:
+                waiting.add(timer_task)
 
-    async for item in source:
-        yielded_last = False
+            done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
 
-        if task and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            if next_task in done:
+                try:
+                    latest = next_task.result()
+                    has_latest = True
+                except StopAsyncIteration:
+                    # Source exhausted: flush any pending item and stop.
+                    if timer_task is not None:
+                        timer_task.cancel()
+                    if has_latest:
+                        yield latest
+                    return
 
-        task = asyncio.create_task(timer(item))
+                # New item arrived: reset the debounce timer.
+                if timer_task is not None:
+                    timer_task.cancel()
+                timer_task = asyncio.ensure_future(asyncio.sleep(delay))
+                next_task = asyncio.ensure_future(it.__anext__())
 
-        try:
-            value = await task
-            yield value
-            yielded_last = True
-            task = None
-        except asyncio.CancelledError:
-            continue
-
-    if task and not task.done() and not yielded_last:
-        try:
-            value = await task
-            yield value
-        except asyncio.CancelledError:
-            pass
+            # Only fires for the *current* timer_task, since a reset above
+            # reassigns the variable before this check runs.
+            if timer_task is not None and timer_task in done:
+                yield latest
+                has_latest = False
+                timer_task = None
+    finally:
+        # Clean up outstanding tasks if the consumer stops early
+        # (e.g. via `break` or an exception).
+        next_task.cancel()
+        if timer_task is not None:
+            timer_task.cancel()
+        await asyncio.gather(
+            next_task, *([timer_task] if timer_task else []), return_exceptions=True
+        )
