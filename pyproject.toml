@@ -4,12 +4,22 @@ version = "0.3.5"
 description = "Utilities for MPD integration with Beets"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["beets>=2.3.1", "python-mpd2>=3.1.1"]
+license-files = ["LICENSE"]
+dependencies = ["beets>=2.13", "python-mpd2>=3.1.1"]
 
 [project.urls]
 homepage = "https://github.com/thekakkun/beets-mpd-utils"
 repository = "https://github.com/thekakkun/beets-mpd-utils.git"
 
 [dependency-groups]
-dev = ["ruff>=0.12.8"]
+dev = [
+  "mypy>=2.3.0",
+  "ruff>=0.12.8",
+]
 
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "beetsplug.mpd_utils"
