@@ -96,27 +96,25 @@ class MPDDjPlugin(BeetsPlugin):
 
         client = await self.mpd_client()
 
-        # mpd_queue = await MPDQueue.initialize(lib, self._log)
-
         async for _ in debounce(await client.idle(["playlist", "player"]), 0.5):
-            upcoming_item_paths = await self.get_upcoming_item_paths(client)
-            if upcoming_item_paths is None:
+            upcoming_items = await self.get_upcoming_items(lib, opts, client)
+            if upcoming_items is None:
                 continue
 
-            upcoming_items = self.count_items(lib, opts, upcoming_item_paths)
-
             deficit = opts.items - len(upcoming_items)
-
             if deficit <= 0:
                 continue
 
-            to_queue = self.get_items(lib, opts, args, deficit)
+            to_queue = self.get_items_to_add(lib, opts, args, deficit)
             for uri in to_queue:
                 await client.add(uri)
 
-    async def get_upcoming_item_paths(self, client: MPDClient) -> Iterator[str] | None:
-        """Return a list of paths to the items upcoming in the queue."""
-
+    async def get_upcoming_items(
+        self,
+        lib: Library,
+        opts: Values,
+        client: MPDClient,
+    ) -> set[int] | None:
         # Turn off random mode, as we need to know what songs are upcoming
         await client.random(0)
 
@@ -125,27 +123,12 @@ class MPDDjPlugin(BeetsPlugin):
         # Don't do anything if playlist is empty
         # (allows user to completely clear queue).
         if status["playlistlength"] == "0":
-            return
+            return None
 
-        return itertools.islice(
+        item_paths = itertools.islice(
             await client.playlist(),
             int(status.get("song", 0)),
         )
-
-        # return [
-        #     os.path.join(music_dir, item.replace("file: ", ""))
-        #     for item in upcoming_items
-        # ]
-
-    def count_items(
-        self,
-        lib: Library,
-        opts: Values,
-        item_paths: Iterator[str],
-    ) -> set[int]:
-        """From a list of paths to items, return a set of the unique
-        items in the list.
-        """
 
         items = set()
 
@@ -153,6 +136,7 @@ class MPDDjPlugin(BeetsPlugin):
             full_path = os.path.join(self.music_dir, path.replace("file: ", ""))
 
             path_query = PathQuery("path", full_path.encode())
+
             if item := lib.items(path_query).get():
                 if opts.album and (album := item.get_album()):
                     items.add(album.get("id", 0))
@@ -161,7 +145,7 @@ class MPDDjPlugin(BeetsPlugin):
 
         return items
 
-    def get_items(
+    def get_items_to_add(
         self,
         lib: Library,
         opts: Values,
@@ -173,10 +157,10 @@ class MPDDjPlugin(BeetsPlugin):
 
         if opts.album:
             items = lib.albums(decargs(args), sort=RandomSort(num))
-            item_paths = (item.item_dir().decode("utf-8") for item in items)
+            item_paths = (item.item_dir().decode() for item in items)
         else:
             items = lib.items(decargs(args), sort=RandomSort(num))
-            item_paths = (item.destination().decode("utf-8") for item in items)
+            item_paths = (item.destination().decode() for item in items)
 
         for path in item_paths:
             yield os.path.relpath(path, start=os.path.expanduser(self.music_dir))
