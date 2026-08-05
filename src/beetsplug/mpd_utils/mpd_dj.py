@@ -19,9 +19,6 @@ from mpd.asyncio import MPDClient
 
 from .utils import debounce
 
-mpd_config = beets.config["mpd"]
-music_dir = beets.config["directory"].get(str)
-
 
 class MPDDjPlugin(BeetsPlugin):
     """The mpd_dj plugin.
@@ -32,17 +29,17 @@ class MPDDjPlugin(BeetsPlugin):
     def __init__(self, name=None):
         super().__init__(name)
 
-        self.mpd_config = self._init_mpd_config()
+        self.mpd_config = self.init_mpd_config()
         self.music_dir = beets.config["directory"].get(str)
 
-    def _init_mpd_config(self) -> Subview:
+    def init_mpd_config(self) -> Subview:
         mpd_config = beets.config["mpd"]
 
         mpd_config["password"].redact = True
         mpd_config.add(
             {
                 "host": os.environ.get("MPD_HOST", "localhost"),
-                "port": int(os.environ.get("MPD_PORT", 6600)),
+                "port": int(os.environ.get("MPD_PORT", "6600")),
                 "password": "",
             }
         )
@@ -52,7 +49,7 @@ class MPDDjPlugin(BeetsPlugin):
     async def mpd_client(self) -> MPDClient:
         client = MPDClient()
 
-        client.disconnect()
+        await client.disconnect()
 
         try:
             await client.connect(
@@ -115,7 +112,7 @@ class MPDDjPlugin(BeetsPlugin):
 
             to_queue = self.get_items(lib, opts, args, deficit)
             for uri in to_queue:
-                client.add(uri)
+                await client.add(uri)
 
     async def get_upcoming_item_paths(self, client: MPDClient) -> Iterator[str] | None:
         """Return a list of paths to the items upcoming in the queue."""
@@ -153,7 +150,7 @@ class MPDDjPlugin(BeetsPlugin):
         items = set()
 
         for path in item_paths:
-            full_path = os.path.join(music_dir, path.replace("file: ", ""))
+            full_path = os.path.join(self.music_dir, path.replace("file: ", ""))
 
             path_query = PathQuery("path", full_path.encode())
             if item := lib.items(path_query).get():
@@ -182,7 +179,7 @@ class MPDDjPlugin(BeetsPlugin):
             item_paths = (item.destination().decode("utf-8") for item in items)
 
         for path in item_paths:
-            yield os.path.relpath(path, start=os.path.expanduser(music_dir))
+            yield os.path.relpath(path, start=os.path.expanduser(self.music_dir))
 
 
 class RandomSort(Sort):
