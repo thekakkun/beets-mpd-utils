@@ -21,5 +21,9 @@ dev = [
 requires = ["uv_build>=0.12.1,<0.13"]
 build-backend = "uv_build"
 
+[[tool.mypy.overrides]]
+module = "mpd.*"
+ignore_missing_imports = true
+
 [tool.uv.build-backend]
 module-name = "beetsplug.mpd_utils"
